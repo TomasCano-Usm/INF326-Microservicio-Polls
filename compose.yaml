@@ -1,0 +1,68 @@
+services:
+  polls-api:
+    build: .
+    ports:
+      - "${POLLS_PORT:-8004}:8004"
+    environment:
+      DATABASE_URL: "${DATABASE_URL:-postgresql+asyncpg://polls:polls-dev-password@postgres:5432/polls}"
+      MESSAGES_BASE_URL: "${MESSAGES_BASE_URL:-}"
+      MESSAGES_TIMEOUT_SECONDS: ${MESSAGES_TIMEOUT_SECONDS:-5}
+      RABBITMQ_URL: amqp://polls:polls-dev-password@rabbitmq:5672/
+      RABBITMQ_EXCHANGE: polls.events
+      POLL_CLOSE_SCAN_INTERVAL_SECONDS: ${POLL_CLOSE_SCAN_INTERVAL_SECONDS:-1}
+      POLL_RETRY_BASE_SECONDS: ${POLL_RETRY_BASE_SECONDS:-1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "from urllib.request import urlopen; urlopen('http://127.0.0.1:8004/health')"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: polls
+      RABBITMQ_DEFAULT_PASS: polls-dev-password
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: polls
+      POSTGRES_USER: polls
+      POSTGRES_PASSWORD: polls-dev-password
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - polls_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U polls -d polls"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  polls_postgres_data:
