@@ -174,7 +174,13 @@ git tag -a v1.1.0 -m "Release v1.1.0"
 git push origin v1.1.0
 ```
 
-Publica también el commit que contiene esa versión en `main`. GitHub mostrará el tag como release seleccionable; `/api/v1` solo cambia al iniciar una nueva versión mayor de la API.
+Publica primero el commit de la versión en `main`. Al subir el tag, el workflow `.github/workflows/release.yml` valida que coincida exactamente con `app/version.py` y crea un GitHub Release con el mismo nombre y notas autogeneradas. Usa exclusivamente el `GITHUB_TOKEN` de Actions, con permiso `contents: write`; si ya existe el release, no crea un duplicado. El contrato `/api/v1` solo cambia al iniciar una nueva versión mayor de la API.
+
+Para publicar un tag anterior que ya existía antes del workflow, se puede ejecutar manualmente en Actions `Publish GitHub Release` indicando el tag. Por ejemplo, el release inicial de la versión actual se puede crear con:
+
+```bash
+gh workflow run release.yml --ref main -f tag=v1.1.0
+```
 
 ## Pruebas
 
