@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.db import Database
 from app.events import EventPublisher, RabbitMQEventPublisher
-from app.messages import ChannelMessagesClient, HttpMessagesClient
+from app.messages import ChannelMessagesClient, messages_client_from_env
 from app.models import CloseRequest, PollCreateRequest, PollResponse, VoteRequest, VoteResponse
 from app.service import CreatePollResult, PollService
 from app.version import __version__
@@ -22,14 +22,14 @@ DatabaseFactory = Callable[[], Database]
 
 def create_app(
     publisher_factory: PublisherFactory = RabbitMQEventPublisher,
-    messages_client_factory: MessagesClientFactory = HttpMessagesClient,
+    messages_client_factory: MessagesClientFactory = messages_client_from_env,
     database_factory: DatabaseFactory = Database,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        messages_client = messages_client_factory()
         database = database_factory()
         publisher = publisher_factory()
-        messages_client = messages_client_factory()
         try:
             await database.connect()
             await publisher.connect()

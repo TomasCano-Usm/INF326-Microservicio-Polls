@@ -5,6 +5,7 @@ services:
       - "${POLLS_PORT:-8004}:8004"
     environment:
       DATABASE_URL: "${DATABASE_URL:-postgresql+asyncpg://polls:polls-dev-password@postgres:5432/polls}"
+      MESSAGES_ENABLED: "${MESSAGES_ENABLED:-false}"
       MESSAGES_BASE_URL: "${MESSAGES_BASE_URL:-}"
       MESSAGES_TIMEOUT_SECONDS: ${MESSAGES_TIMEOUT_SECONDS:-5}
       RABBITMQ_URL: amqp://polls:polls-dev-password@rabbitmq:5672/

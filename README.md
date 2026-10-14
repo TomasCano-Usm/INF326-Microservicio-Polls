@@ -1,9 +1,11 @@
 # INF326-Microservicio-Polls
 Repositorio público para la implementación de un microservicio de encuestas en el contexto de la asignatura inf326, UTFSM 
 
-> **Versión actual: `1.0.0`** · Tag de release: **`v1.0.0`** · API REST: **`/api/v1`**
+> **Versión actual: `1.1.0`** · Tag de release: **`v1.1.0`** · API REST: **`/api/v1`**
 
 La versión del servicio también aparece en la metadata OpenAPI de FastAPI (`/openapi.json` y `/docs`). Su fuente única está en `app/version.py`.
+
+> **Credenciales de desarrollo:** las credenciales incluidas en Docker Compose son ficticias y exclusivamente para desarrollo local. No las reutilices en staging ni en despliegues reales. Los secretos reales deben suministrarse mediante variables de entorno o un gestor de secretos y nunca deben commitearse.
 
 ## Estado actual
 
@@ -11,15 +13,19 @@ Microservicio REST v1 con FastAPI para crear, responder, cerrar y consultar encu
 
 ## Requisitos y ejecución
 
-Polls ocupa el puerto `8004` para convivir con Users (`8001`), Channels (`8002`) y Messages (`8003`). Define primero `MESSAGES_BASE_URL` y luego levanta la API, PostgreSQL y RabbitMQ:
+Polls ocupa el puerto `8004` para convivir con Users (`8001`), Channels (`8002`) y Messages (`8003`). Compose deshabilita Messages por defecto, así que el entorno local puede levantarse directamente sin configurar su URL:
 
 ```bash
-# Si Messages comparte la red Docker y el servicio se llama "messages":
-export MESSAGES_BASE_URL=http://messages:8003
-# Para Messages ejecutándose en el host, usar en su lugar:
-# export MESSAGES_BASE_URL=http://host.docker.internal:8003
 docker compose up --build
 ```
+
+Para habilitar la integración cuando Messages esté disponible, define ambos valores. Si comparte la red Docker y el servicio se llama `messages`:
+
+```bash
+MESSAGES_ENABLED=true MESSAGES_BASE_URL=http://messages:8003 docker compose up --build
+```
+
+Si Messages corre en el host, usa `MESSAGES_BASE_URL=http://host.docker.internal:8003`.
 
 - API: `http://localhost:8004`
 - OpenAPI/Swagger: `http://localhost:8004/docs`
@@ -27,7 +33,7 @@ docker compose up --build
 - RabbitMQ Management: `http://localhost:15672` (usuario `polls`, clave `polls-dev-password`)
 - Health check: `GET http://localhost:8004/health`
 
-Si Messages corre en el host mientras Polls está en Docker, configura `MESSAGES_BASE_URL=http://host.docker.internal:8003`. Si usa otro nombre o dirección de red, define la URL base correspondiente; el servicio Messages no forma parte de este Compose y debe ser accesible desde el contenedor Polls. El puerto host de Polls se puede cambiar con `POLLS_PORT`; `POLL_CLOSE_SCAN_INTERVAL_SECONDS` configura la revisión de vencimientos y `POLL_RETRY_BASE_SECONDS` el backoff inicial de reintentos.
+Cuando `MESSAGES_ENABLED=false`, Polls omite y registra los anuncios/resultados, sin hacer requests HTTP; las encuestas, votos, cierres y eventos siguen funcionando. Para Messages fuera de este Compose, la URL indicada debe ser accesible desde el contenedor Polls. El puerto host de Polls se puede cambiar con `POLLS_PORT`; `POLL_CLOSE_SCAN_INTERVAL_SECONDS` configura la revisión de vencimientos y `POLL_RETRY_BASE_SECONDS` el backoff inicial de reintentos.
 
 Detén los servicios con `docker compose down`.
 
@@ -45,12 +51,14 @@ source .venv/bin/activate
 pip install -r requirements.txt
 export DATABASE_URL=postgresql+asyncpg://polls:polls-dev-password@localhost:5432/polls
 export RABBITMQ_URL=amqp://polls:polls-dev-password@localhost:5672/
-export MESSAGES_BASE_URL=http://localhost:8003
+export MESSAGES_ENABLED=false
 alembic upgrade head
 uvicorn app.main:app --reload --port 8004
 ```
 
-En Windows, activa el entorno con `.venv\Scripts\activate` y define `DATABASE_URL`, `RABBITMQ_URL` y `MESSAGES_BASE_URL` en la terminal antes de iniciar Uvicorn.
+La aplicación fuera de Compose habilita Messages por defecto para conservar el comportamiento de despliegues existentes. Si defines `MESSAGES_ENABLED=true`, también debes definir `MESSAGES_BASE_URL`; si la integración está deshabilitada, no se requiere la URL. Solo se aceptan los valores `true` y `false`.
+
+En Windows, activa el entorno con `.venv\Scripts\activate` y define `DATABASE_URL`, `RABBITMQ_URL` y `MESSAGES_ENABLED` en la terminal antes de iniciar Uvicorn.
 
 ## Contrato REST v1
 
@@ -137,7 +145,7 @@ Polls no consulta Users o Channels: Messages valida esas referencias y conserva 
 
 La creación llama a Messages antes de activar la encuesta. Un rechazo `4xx` cancela la creación y no emite `poll.created`; ante un fallo transitorio se conserva como `pending_announcement` y responde `202`. Si Messages acepta pero RabbitMQ falla, la encuesta queda activa y el outbox reintenta `poll.created` sin volver a publicar el anuncio. Al cerrar, Polls conserva el estado cerrado y el outbox de `poll.closed`; si falla el POST de resultados, se reintenta desde la tabla de entregas.
 
-El timeout de Messages se configura con `MESSAGES_TIMEOUT_SECONDS` (5 segundos por defecto). Los rechazos HTTP `4xx` al crear se devuelven al cliente; fallos de red/`5xx` dejan el anuncio pendiente. Las notificaciones y eventos pendientes sobreviven reinicios. Messages no ofrece idempotencia en el contrato actual, por lo que un timeout ambiguo puede ocasionar un mensaje duplicado al reintentar.
+El timeout de Messages se configura con `MESSAGES_TIMEOUT_SECONDS` (5 segundos por defecto). Los rechazos HTTP `4xx` al crear se devuelven al cliente; fallos de red/`5xx` dejan el anuncio pendiente. Las notificaciones y eventos pendientes sobreviven reinicios. Messages no ofrece idempotencia en el contrato actual, por lo que un timeout ambiguo puede ocasionar un mensaje duplicado al reintentar. Cuando la integración está deshabilitada, las entregas se registran como `skipped`.
 
 ## Persistencia
 

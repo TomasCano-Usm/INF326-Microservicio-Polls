@@ -1,8 +1,12 @@
+import logging
 import os
 from typing import Protocol
 from urllib.parse import quote
 
 import httpx
+
+
+logger = logging.getLogger(__name__)
 
 
 class MessagesClientError(Exception):
@@ -21,6 +25,8 @@ class MessagesUnavailable(MessagesClientError):
 
 
 class ChannelMessagesClient(Protocol):
+    enabled: bool
+
     async def connect(self) -> None: ...
 
     async def post_message(self, channel_id: str, user_id: str, content: str) -> None: ...
@@ -29,6 +35,8 @@ class ChannelMessagesClient(Protocol):
 
 
 class HttpMessagesClient:
+    enabled = True
+
     def __init__(
         self,
         base_url: str | None = None,
@@ -88,3 +96,25 @@ class HttpMessagesClient:
             if detail:
                 return str(detail)
         return str(body)[:500] or f"Messages respondió con el estado HTTP {response.status_code}."
+
+
+class DisabledMessagesClient:
+    enabled = False
+
+    async def connect(self) -> None:
+        return None
+
+    async def post_message(self, channel_id: str, user_id: str, content: str) -> None:
+        logger.info("Se omitió una publicación a Messages porque MESSAGES_ENABLED=false.")
+
+    async def close(self) -> None:
+        return None
+
+
+def messages_client_from_env() -> ChannelMessagesClient:
+    configured_value = os.getenv("MESSAGES_ENABLED", "true").strip().lower()
+    if configured_value == "false":
+        return DisabledMessagesClient()
+    if configured_value == "true":
+        return HttpMessagesClient()
+    raise ValueError("MESSAGES_ENABLED debe ser true o false.")

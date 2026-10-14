@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
@@ -8,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.db import Database
 from app.main import create_app
-from app.messages import MessagesRejected, MessagesUnavailable
+from app.messages import DisabledMessagesClient, MessagesRejected, MessagesUnavailable
 
 
 class FakePublisher:
@@ -34,6 +35,8 @@ class FakePublisher:
 
 
 class FakeMessagesClient:
+    enabled = True
+
     def __init__(self) -> None:
         self.requests: list[dict[str, str]] = []
         self.failure: Exception | None = None
@@ -56,6 +59,7 @@ class FakeMessagesClient:
 def api(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setenv("POLL_CLOSE_SCAN_INTERVAL_SECONDS", "0.05")
     monkeypatch.setenv("POLL_RETRY_BASE_SECONDS", "0.05")
+    monkeypatch.setenv("MESSAGES_ENABLED", "true")
     publisher = FakePublisher()
     messages = FakeMessagesClient()
     database_path = tmp_path / "polls.sqlite"
@@ -289,3 +293,70 @@ def test_failed_closure_message_retries_without_duplicate_closed_event(api) -> N
     messages.failure = None
     assert wait_for(lambda: len(messages.requests) == 2)
     assert [event[0] for event in publisher.events].count("poll.closed") == 1
+
+
+def test_messages_disabled_starts_without_url_and_skips_deliveries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("MESSAGES_ENABLED", "false")
+    monkeypatch.setenv("POLL_CLOSE_SCAN_INTERVAL_SECONDS", "0.05")
+    monkeypatch.setenv("POLL_RETRY_BASE_SECONDS", "0.05")
+    monkeypatch.delenv("MESSAGES_BASE_URL", raising=False)
+    publisher = FakePublisher()
+    database_path = tmp_path / "polls-disabled.sqlite"
+    application = create_app(
+        lambda: publisher,
+        database_factory=lambda: Database(
+            f"sqlite+aiosqlite:///{database_path}", create_schema=True
+        ),
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.service"), TestClient(application) as client:
+        assert isinstance(client.app.state.poll_service._messages_client, DisabledMessagesClient)
+        poll = create_poll(client)
+        closed = client.post(
+            f"/api/v1/polls/{poll['poll_id']}/close",
+            json={"author_id": "user-author"},
+        )
+        assert wait_for(lambda: any(event[0] == "poll.created" for event in publisher.events))
+        assert wait_for(lambda: any(event[0] == "poll.closed" for event in publisher.events))
+        with sqlite3.connect(database_path) as connection:
+            deliveries = connection.execute(
+                "SELECT kind, status FROM message_deliveries ORDER BY kind"
+            ).fetchall()
+
+    assert poll["status"] == "open"
+    assert closed.status_code == 200
+    assert closed.json()["status"] == "closed"
+    assert caplog.text.count("MESSAGES_ENABLED=false") == 2
+    assert deliveries == [("announcement", "skipped"), ("final_results", "skipped")]
+
+
+def test_messages_enabled_requires_base_url_at_startup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("MESSAGES_ENABLED", "true")
+    monkeypatch.delenv("MESSAGES_BASE_URL", raising=False)
+    database_path = tmp_path / "polls-enabled.sqlite"
+    application = create_app(
+        lambda: FakePublisher(),
+        database_factory=lambda: Database(
+            f"sqlite+aiosqlite:///{database_path}", create_schema=True
+        ),
+    )
+
+    with pytest.raises(ValueError, match="MESSAGES_BASE_URL es obligatoria"):
+        with TestClient(application):
+            pass
+
+
+def test_messages_enabled_rejects_invalid_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MESSAGES_ENABLED", "sometimes")
+
+    from app.messages import messages_client_from_env
+
+    with pytest.raises(ValueError, match="MESSAGES_ENABLED debe ser true o false"):
+        messages_client_from_env()

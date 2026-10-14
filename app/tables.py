@@ -109,7 +109,7 @@ class MessageDelivery(Base):
             name="ck_message_deliveries_kind",
         ),
         CheckConstraint(
-            "status IN ('pending', 'processing', 'sent', 'failed')",
+            "status IN ('pending', 'processing', 'sent', 'failed', 'skipped')",
             name="ck_message_deliveries_status",
         ),
         Index(

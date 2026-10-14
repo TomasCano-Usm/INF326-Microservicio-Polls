@@ -30,6 +30,7 @@ from app.tables import MessageDelivery, OutboxEvent, Poll, PollOption, Vote
 
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 LEASE_SECONDS = 30
 MAX_RETRY_SECONDS = 300
 
@@ -473,6 +474,10 @@ class PollService:
         return delivery_id
 
     async def _process_message_delivery(self, delivery_id: UUID) -> None:
+        if not self._messages_client.enabled:
+            await self._skip_message_delivery(delivery_id)
+            return
+
         attempt = await self._claim_message_delivery(delivery_id)
         if attempt is None:
             return
@@ -492,6 +497,51 @@ class PollService:
             await self._finish_message_failure(attempt, error, rejected=False)
         else:
             await self._finish_message_success(attempt)
+
+    async def _skip_message_delivery(self, delivery_id: UUID) -> None:
+        now = datetime.now(timezone.utc)
+        async with self._sessions() as session, session.begin():
+            claim = await session.execute(
+                update(MessageDelivery)
+                .where(
+                    MessageDelivery.delivery_id == delivery_id,
+                    MessageDelivery.status.in_(["pending", "processing"]),
+                )
+                .values(
+                    status="skipped",
+                    lease_until=None,
+                    last_error="Omitido: integración con Messages deshabilitada.",
+                )
+                .returning(MessageDelivery.poll_id, MessageDelivery.kind)
+            )
+            claimed = claim.one_or_none()
+            if claimed is None:
+                return
+
+            poll_id, kind = claimed
+            poll = await self._locked_poll(session, poll_id)
+            if poll is None:
+                return
+
+            logger.warning(
+                "Se omitió la publicación %s a Messages para la encuesta %s: MESSAGES_ENABLED=false.",
+                kind,
+                poll_id,
+            )
+            if kind == "announcement" and poll.status == "pending_announcement":
+                poll.status = "open"
+                response = await self._poll_response(session, poll)
+                session.add(
+                    OutboxEvent(
+                        event_id=uuid4(),
+                        poll_id=poll.poll_id,
+                        event_type="poll.created",
+                        payload=response.model_dump(mode="json"),
+                        occurred_at=now,
+                        attempt_count=0,
+                        next_attempt_at=now,
+                    )
+                )
 
     async def _claim_message_delivery(self, delivery_id: UUID) -> MessageAttempt | None:
         now = datetime.now(timezone.utc)
@@ -570,12 +620,16 @@ class PollService:
         async with self._sessions() as session, session.begin():
             delivery = await session.get(MessageDelivery, attempt.delivery_id)
             poll = await self._locked_poll(session, attempt.poll_id)
-            if delivery is None or poll is None or delivery.status == "sent":
+            if delivery is None or poll is None or delivery.status in {"sent", "skipped"}:
                 return
-            delivery.status = "sent"
-            delivery.sent_at = now
+            delivery.status = "sent" if self._messages_client.enabled else "skipped"
+            delivery.sent_at = now if self._messages_client.enabled else None
             delivery.lease_until = None
-            delivery.last_error = None
+            delivery.last_error = (
+                None
+                if self._messages_client.enabled
+                else "Omitido: integración con Messages deshabilitada."
+            )
 
             if attempt.kind == "announcement" and poll.status == "pending_announcement":
                 if poll.closes_at <= now:
@@ -742,7 +796,7 @@ class PollService:
                 MessageDelivery.kind == "final_results",
             )
         )
-        if delivery is None or delivery.status in {"sent", "failed"}:
+        if delivery is None or delivery.status in {"sent", "failed", "skipped"}:
             return None
         return delivery.delivery_id
 
