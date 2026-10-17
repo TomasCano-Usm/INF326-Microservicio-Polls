@@ -59,6 +59,23 @@ class PollResponse(APIModel):
     creation_error: str | None = None
 
 
+class PollSummary(APIModel):
+    poll_id: UUID
+    channel_id: str
+    author_id: str
+    question: str
+    status: Literal["pending_announcement", "open", "closed", "creation_failed"]
+    duration_minutes: int
+    closes_at: datetime
+    created_at: datetime
+    closed_at: datetime | None
+    total_votes: int
+
+
+class PollListResponse(APIModel):
+    polls: list[PollSummary]
+
+
 class VoteResponse(APIModel):
     poll_id: UUID
     voter_id: str

@@ -1,7 +1,7 @@
 # INF326-Microservicio-Polls
 Repositorio público para la implementación de un microservicio de encuestas en el contexto de la asignatura inf326, UTFSM 
 
-> **Versión actual: `1.1.0`** · Tag de release: **`v1.1.0`** · API REST: **`/api/v1`**
+> **Versión actual: `1.2.0`** · Tag de release: **`v1.2.0`** · API REST: **`/api/v1`**
 
 La versión del servicio también aparece en la metadata OpenAPI de FastAPI (`/openapi.json` y `/docs`). Su fuente única está en `app/version.py`.
 
@@ -9,7 +9,7 @@ La versión del servicio también aparece en la metadata OpenAPI de FastAPI (`/o
 
 ## Estado actual
 
-Microservicio REST v1 con FastAPI para crear, responder, cerrar y consultar encuestas. PostgreSQL conserva el estado; `channel_id`, `author_id` y `voter_id` son referencias externas sin llaves foráneas a Users o Channels.
+Microservicio REST v1 con FastAPI para crear, responder, cerrar, consultar y listar encuestas. PostgreSQL conserva el estado; `channel_id`, `author_id` y `voter_id` son referencias externas validadas opcionalmente contra Users/Channels. Incluye validación de referencias por id (canal al crear, autor al crear, votante al votar) controlada por `REFERENCES_ENABLED` (deshabilitada por defecto para ejecución standalone).
 
 ## Requisitos y ejecución
 
@@ -35,6 +35,14 @@ Si Messages corre en el host, usa `MESSAGES_BASE_URL=http://host.docker.internal
 
 Cuando `MESSAGES_ENABLED=false`, Polls omite y registra los anuncios/resultados, sin hacer requests HTTP; las encuestas, votos, cierres y eventos siguen funcionando. Para Messages fuera de este Compose, la URL indicada debe ser accesible desde el contenedor Polls. El puerto host de Polls se puede cambiar con `POLLS_PORT`; `POLL_CLOSE_SCAN_INTERVAL_SECONDS` configura la revisión de vencimientos y `POLL_RETRY_BASE_SECONDS` el backoff inicial de reintentos.
 
+Para habilitar la validación de referencias contra Users/Channels (integración con el chat base):
+
+```bash
+REFERENCES_ENABLED=true USERS_BASE_URL=http://users:8000 CHANNELS_BASE_URL=http://channels:8000 docker compose up --build
+```
+
+Cuando `REFERENCES_ENABLED=false` (default), el servicio valida solo integridad interna y corre standalone.
+
 Detén los servicios con `docker compose down`.
 
 Para ejecutar la API fuera de Docker, se requiere Python 3.12 o superior. Primero levanta PostgreSQL y RabbitMQ:
@@ -52,11 +60,14 @@ pip install -r requirements.txt
 export DATABASE_URL=postgresql+asyncpg://polls:polls-dev-password@localhost:5432/polls
 export RABBITMQ_URL=amqp://polls:polls-dev-password@localhost:5672/
 export MESSAGES_ENABLED=false
+export REFERENCES_ENABLED=false
 alembic upgrade head
 uvicorn app.main:app --reload --port 8004
 ```
 
 La aplicación fuera de Compose habilita Messages por defecto para conservar el comportamiento de despliegues existentes. Si defines `MESSAGES_ENABLED=true`, también debes definir `MESSAGES_BASE_URL`; si la integración está deshabilitada, no se requiere la URL. Solo se aceptan los valores `true` y `false`.
+
+Para validación de referencias fuera de Docker, define `REFERENCES_ENABLED=true` junto con `USERS_BASE_URL` y `CHANNELS_BASE_URL`.
 
 En Windows, activa el entorno con `.venv\Scripts\activate` y define `DATABASE_URL`, `RABBITMQ_URL` y `MESSAGES_ENABLED` en la terminal antes de iniciar Uvicorn.
 
@@ -70,6 +81,7 @@ Todos los cuerpos son JSON. Polls genera un UUID para `poll_id` y para cada `opt
 | `POST` | `/api/v1/polls/{poll_id}/votes` | Registra un voto (`201`). |
 | `POST` | `/api/v1/polls/{poll_id}/close` | Cierra la encuesta como su autor (`200`). |
 | `GET` | `/api/v1/polls/{poll_id}` | Consulta estado y resultados (`200`). |
+| `GET` | `/api/v1/polls?channel_id=` | Lista encuestas de un canal con paginación (`200`). |
 
 ### Crear encuesta
 
@@ -116,6 +128,33 @@ Solo el `author_id` creador puede cerrarla (`403` para otro usuario). Repetir un
 
 Errores generales: `404` para encuesta inexistente, `409` para voto duplicado, encuesta cerrada o conflicto de idempotencia, `410` si el anuncio pendiente venció, `422` para datos inválidos y `403` si alguien distinto al autor solicita el cierre.
 
+### Listar encuestas por canal
+
+`GET /api/v1/polls?channel_id=` devuelve un objeto con campo `polls` que contiene un array de resúmenes de encuesta (sin opciones). Parámetros de query:
+- `channel_id` (obligatorio): filtra por canal.
+- `limit` (opcional, default 50, máx 100): máximo de resultados.
+- `offset` (opcional, default 0): paginación.
+
+Ejemplo de respuesta:
+```json
+{
+  "polls": [
+    {
+      "poll_id": "...",
+      "channel_id": "channel-123",
+      "author_id": "user-456",
+      "question": "¿Qué alternativa prefieres?",
+      "status": "open",
+      "duration_minutes": 5,
+      "closes_at": "2026-01-15T10:00:00Z",
+      "created_at": "2026-01-15T09:55:00Z",
+      "closed_at": null,
+      "total_votes": 0
+    }
+  ]
+}
+```
+
 ## Eventos RabbitMQ
 
 Polls declara el exchange durable tipo `topic` **`polls.events`** y publica con confirmación del broker desde un outbox PostgreSQL:
@@ -136,16 +175,36 @@ Polls consume de forma síncrona `POST {MESSAGES_BASE_URL}/api/v1/channels/{chan
 
 ```json
 {
-  "user_id": "<author_id de la encuesta>",
+  "author_id": "<author_id de la encuesta>",
   "content": "<texto construido por Polls>"
 }
 ```
 
-Polls no consulta Users o Channels: Messages valida esas referencias y conserva los mensajes en su propio almacenamiento. Para anunciar una encuesta, `content` incluye pregunta, `poll_id`, alternativas y fecha/hora de cierre. Al cerrarla manualmente o por vencimiento, publica la pregunta, el conteo final por alternativa y el total de votos.
+Polls no consulta Users o Channels por defecto; la validación de referencias se habilita con `REFERENCES_ENABLED=true` (ver abajo). Messages valida esas referencias y conserva los mensajes en su propio almacenamiento. Para anunciar una encuesta, `content` incluye pregunta, `poll_id`, alternativas y fecha/hora de cierre. Al cerrarla manualmente o por vencimiento, publica la pregunta, el conteo final por alternativa y el total de votos.
 
 La creación llama a Messages antes de activar la encuesta. Un rechazo `4xx` cancela la creación y no emite `poll.created`; ante un fallo transitorio se conserva como `pending_announcement` y responde `202`. Si Messages acepta pero RabbitMQ falla, la encuesta queda activa y el outbox reintenta `poll.created` sin volver a publicar el anuncio. Al cerrar, Polls conserva el estado cerrado y el outbox de `poll.closed`; si falla el POST de resultados, se reintenta desde la tabla de entregas.
 
 El timeout de Messages se configura con `MESSAGES_TIMEOUT_SECONDS` (5 segundos por defecto). Los rechazos HTTP `4xx` al crear se devuelven al cliente; fallos de red/`5xx` dejan el anuncio pendiente. Las notificaciones y eventos pendientes sobreviven reinicios. Messages no ofrece idempotencia en el contrato actual, por lo que un timeout ambiguo puede ocasionar un mensaje duplicado al reintentar. Cuando la integración está deshabilitada, las entregas se registran como `skipped`.
+
+## Validación de referencias (Users/Channels)
+
+Polls puede validar la existencia de canal, autor y votante contra los servicios del chat base antes de crear o votar. Se habilita con `REFERENCES_ENABLED=true` (requiere `USERS_BASE_URL` y `CHANNELS_BASE_URL`). Por defecto está deshabilitada (`false`) para que el servicio corra standalone.
+
+Cuando está habilitada:
+- **Crear encuesta**: valida `channel_id` y `author_id` (`GET /api/v1/channels/{id}`, `GET /api/v1/users/{id}`).
+- **Votar**: valida `voter_id` (`GET /api/v1/users/{id}`).
+
+Errores:
+- Referencia no encontrada (404 del servicio base) → `422 Unprocessable Content`.
+- Servicio base no disponible (timeout/red) → `503 Service Unavailable`.
+
+Variables de entorno:
+| Variable | Default | Descripción |
+| --- | --- | --- |
+| `REFERENCES_ENABLED` | `false` | `true`/`false` |
+| `USERS_BASE_URL` | *(requerido si enabled)* | Base URL del servicio Users (ej. `http://users:8000`) |
+| `CHANNELS_BASE_URL` | *(requerido si enabled)* | Base URL del servicio Channels (ej. `http://channels:8000`) |
+| `REFERENCES_TIMEOUT_SECONDS` | `5` | Timeout para validaciones |
 
 ## Persistencia
 

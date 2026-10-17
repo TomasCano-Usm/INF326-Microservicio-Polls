@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.clients import ReferenceClient, ReferenceNotFound, ReferenceServiceUnavailable
 from app.db import Database
 from app.events import EventPublisher
 from app.message_content import build_poll_announcement, build_poll_results
@@ -23,6 +24,7 @@ from app.models import (
     OptionResult,
     PollCreateRequest,
     PollResponse,
+    PollSummary,
     VoteRequest,
     VoteResponse,
 )
@@ -57,11 +59,13 @@ class PollService:
         database: Database,
         event_publisher: EventPublisher,
         messages_client: ChannelMessagesClient,
+        reference_client: ReferenceClient,
         close_scan_interval: float = 1.0,
     ) -> None:
         self._sessions = database.sessions
         self._event_publisher = event_publisher
         self._messages_client = messages_client
+        self._reference_client = reference_client
         self._close_scan_interval = max(0.1, close_scan_interval)
         self._retry_base_seconds = max(0.05, float(os.getenv("POLL_RETRY_BASE_SECONDS", "1")))
 
@@ -70,6 +74,9 @@ class PollService:
         request: PollCreateRequest,
         idempotency_key: str | None = None,
     ) -> CreatePollResult:
+        # Validar referencias (canal y autor) si está habilitado
+        await self._validate_references(channel_id=request.channel_id, author_id=request.author_id)
+
         idempotency_key = self._validate_idempotency_key(idempotency_key)
         request_hash = self._request_hash(request)
 
@@ -147,6 +154,9 @@ class PollService:
         closure_delivery_id: UUID | None = None
         vote_response: VoteResponse | None = None
         conflict_after_commit = False
+
+        # Validar votante si está habilitado
+        await self._validate_voter(request.voter_id)
 
         try:
             async with self._sessions() as session, session.begin():
@@ -275,6 +285,52 @@ class PollService:
         await self._close_due_poll(poll_id)
         await self._expire_pending_announcement(poll_id)
         return await self._read_poll(poll_id)
+
+    async def list_polls(
+        self,
+        channel_id: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list["PollSummary"]:
+        if limit < 1 or limit > 100:
+            raise HTTPException(status_code=422, detail="limit debe estar entre 1 y 100")
+        if offset < 0:
+            raise HTTPException(status_code=422, detail="offset debe ser >= 0")
+        async with self._sessions() as session:
+            result = await session.execute(
+                select(Poll)
+                .where(Poll.channel_id == channel_id)
+                .order_by(Poll.created_at.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            polls = result.scalars().all()
+
+        summaries = []
+        for poll in polls:
+            # Get vote counts
+            vote_result = await session.execute(
+                select(Vote.option_id, func.count())
+                .where(Vote.poll_id == poll.poll_id)
+                .group_by(Vote.option_id)
+            )
+            counts = {option_id: count for option_id, count in vote_result.all()}
+            total_votes = sum(counts.values())
+            summaries.append(
+                PollSummary(
+                    poll_id=poll.poll_id,
+                    channel_id=poll.channel_id,
+                    author_id=poll.author_id,
+                    question=poll.question,
+                    status=poll.status,
+                    duration_minutes=poll.duration_minutes,
+                    closes_at=poll.closes_at,
+                    created_at=poll.created_at,
+                    closed_at=poll.closed_at,
+                    total_votes=total_votes,
+                )
+            )
+        return summaries
 
     async def close_expired_polls(self, batch_size: int = 100) -> None:
         await self._expire_pending_announcements(batch_size)
@@ -485,7 +541,7 @@ class PollService:
         try:
             await self._messages_client.post_message(
                 channel_id=attempt.channel_id,
-                user_id=attempt.author_id,
+                author_id=attempt.author_id,
                 content=attempt.content,
             )
         except MessagesRejected as error:
@@ -852,3 +908,29 @@ class PollService:
             self._retry_base_seconds * (2 ** max(0, attempt_count - 1)),
         )
         return timedelta(seconds=seconds)
+
+    async def _validate_references(self, channel_id: str, author_id: str) -> None:
+        if not self._reference_client.enabled:
+            return
+        try:
+            await self._reference_client.validate_channel(channel_id)
+        except ReferenceNotFound as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except ReferenceServiceUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        try:
+            await self._reference_client.validate_user(author_id)
+        except ReferenceNotFound as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except ReferenceServiceUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    async def _validate_voter(self, voter_id: str) -> None:
+        if not self._reference_client.enabled:
+            return
+        try:
+            await self._reference_client.validate_user(voter_id)
+        except ReferenceNotFound as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except ReferenceServiceUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error

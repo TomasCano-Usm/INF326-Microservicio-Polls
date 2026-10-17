@@ -7,10 +7,11 @@ from uuid import UUID
 from fastapi import FastAPI, Header, Request, status
 from fastapi.responses import JSONResponse
 
+from app.clients import ReferenceClient, reference_client_from_env
 from app.db import Database
 from app.events import EventPublisher, RabbitMQEventPublisher
 from app.messages import ChannelMessagesClient, messages_client_from_env
-from app.models import CloseRequest, PollCreateRequest, PollResponse, VoteRequest, VoteResponse
+from app.models import CloseRequest, PollCreateRequest, PollListResponse, PollResponse, PollSummary, VoteRequest, VoteResponse
 from app.service import CreatePollResult, PollService
 from app.version import __version__
 
@@ -18,22 +19,26 @@ from app.version import __version__
 PublisherFactory = Callable[[], EventPublisher]
 MessagesClientFactory = Callable[[], ChannelMessagesClient]
 DatabaseFactory = Callable[[], Database]
+ReferenceClientFactory = Callable[[], ReferenceClient]
 
 
 def create_app(
     publisher_factory: PublisherFactory = RabbitMQEventPublisher,
     messages_client_factory: MessagesClientFactory = messages_client_from_env,
     database_factory: DatabaseFactory = Database,
+    reference_client_factory: ReferenceClientFactory = reference_client_from_env,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         messages_client = messages_client_factory()
         database = database_factory()
         publisher = publisher_factory()
+        reference_client = reference_client_factory()
         try:
             await database.connect()
             await publisher.connect()
             await messages_client.connect()
+            await reference_client.connect()
         except Exception:
             with suppress(Exception):
                 await messages_client.close()
@@ -41,6 +46,8 @@ def create_app(
                 await publisher.close()
             with suppress(Exception):
                 await database.close()
+            with suppress(Exception):
+                await reference_client.close()
             raise
 
         close_scan_interval = float(os.getenv("POLL_CLOSE_SCAN_INTERVAL_SECONDS", "1"))
@@ -48,6 +55,7 @@ def create_app(
             database,
             publisher,
             messages_client,
+            reference_client,
             close_scan_interval=close_scan_interval,
         )
         application.state.database = database
@@ -67,7 +75,10 @@ def create_app(
                 try:
                     await publisher.close()
                 finally:
-                    await database.close()
+                    try:
+                        await reference_client.close()
+                    finally:
+                        await database.close()
 
     application = FastAPI(
         title="Microservicio de encuestas",
@@ -125,6 +136,20 @@ def create_app(
     )
     async def get_poll(poll_id: UUID, request: Request) -> PollResponse:
         return await get_service(request).get_poll(poll_id)
+
+    @application.get(
+        "/api/v1/polls",
+        response_model=PollListResponse,
+        tags=["Encuestas"],
+    )
+    async def list_polls(
+        request: Request,
+        channel_id: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> PollListResponse:
+        polls = await get_service(request).list_polls(channel_id, limit, offset)
+        return PollListResponse(polls=polls)
 
     return application
 

@@ -34,7 +34,7 @@ def test_client_posts_only_messages_contract_fields() -> None:
     assert received == {
         "method": "POST",
         "url": "http://messages:8003/api/v1/channels/channel-123/messages",
-        "body": {"user_id": "user-456", "content": "Encuesta de prueba"},
+        "body": {"author_id": "user-456", "content": "Encuesta de prueba"},
     }
 
 
