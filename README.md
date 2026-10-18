@@ -60,61 +60,19 @@ La aplicación fuera de Compose habilita Messages por defecto para conservar el 
 
 En Windows, activa el entorno con `.venv\Scripts\activate` y define `DATABASE_URL`, `RABBITMQ_URL` y `MESSAGES_ENABLED` en la terminal antes de iniciar Uvicorn.
 
-## Contrato REST v1
+## API REST
 
-Todos los cuerpos son JSON. Polls genera un UUID para `poll_id` y para cada `option_id`.
-
-| Método | Ruta | Resultado |
+| Método | Ruta | Propósito |
 | --- | --- | --- |
-| `POST` | `/api/v1/polls` | Crea una encuesta (`201`) o responde `202` mientras se publica el anuncio. |
-| `POST` | `/api/v1/polls/{poll_id}/votes` | Registra un voto (`201`). |
-| `POST` | `/api/v1/polls/{poll_id}/close` | Cierra la encuesta como su autor (`200`). |
-| `GET` | `/api/v1/polls/{poll_id}` | Consulta estado y resultados (`200`). |
+| `GET` | `/health` | Comprueba disponibilidad. |
+| `POST` | `/api/v1/polls` | Crea una encuesta. |
+| `POST` | `/api/v1/polls/{poll_id}/votes` | Registra un voto. |
+| `POST` | `/api/v1/polls/{poll_id}/close` | Cierra una encuesta. |
+| `GET` | `/api/v1/polls/{poll_id}` | Consulta una encuesta y sus resultados. |
 
-### Crear encuesta
+La referencia de parámetros, cuerpos y ejemplos está en [`docs/api.md`](docs/api.md). La documentación interactiva está disponible en `/docs` y `/redoc`.
 
-`duration_minutes` es opcional: por defecto son 5 minutos. Debe ser un entero entre 1 y 1440; Polls calcula y devuelve `closes_at` desde el instante en que recibe la solicitud. Se requieren de 2 a 10 alternativas no vacías y distintas.
-
-```json
-{
-  "channel_id": "channel-123",
-  "author_id": "user-456",
-  "question": "¿Qué alternativa prefieres?",
-  "options": ["Alternativa A", "Alternativa B"],
-  "duration_minutes": 5
-}
-```
-
-También puedes enviar el header opcional `Idempotency-Key`. Si se repite con el mismo body y autor, Polls devuelve la misma encuesta sin repetir el anuncio (`200` si ya está activa, `202` si sigue pendiente); si se reutiliza con otro body responde `409`.
-
-La respuesta incluye `poll_id`, `closes_at` y las opciones con sus `option_id`, posición y conteo inicial. Si Messages está temporalmente indisponible, Polls devuelve `202` con estado `pending_announcement`; el anuncio se reintenta y la encuesta se activa al publicarse. Durante ese estado aún no se puede votar. Si el anuncio no llega a publicarse antes del deadline, el estado pasa a `creation_failed`.
-
-### Registrar un voto
-
-```json
-{
-  "voter_id": "user-789",
-  "option_id": "<option_id-devuelto-al-crear>"
-}
-```
-
-Se permite un voto por usuario en cada encuesta. Un voto repetido o una encuesta cerrada responde `409`; una opción que no pertenece a la encuesta responde `422`.
-
-### Cerrar encuesta
-
-```json
-{
-  "author_id": "user-456"
-}
-```
-
-Solo el `author_id` creador puede cerrarla (`403` para otro usuario). Repetir un cierre válido devuelve el estado final sin volver a publicar el evento.
-
-### Consultar encuesta y resultados
-
-`GET /api/v1/polls/{poll_id}` no requiere body. Devuelve `poll_id`, `channel_id`, `author_id`, pregunta, estado, fechas, `total_votes` y cada opción con su identificador, texto y `vote_count`. Los conteos se muestran mientras la encuesta está abierta y cerrada; el estado también puede ser `pending_announcement` o `creation_failed`.
-
-Errores generales: `404` para encuesta inexistente, `409` para voto duplicado, encuesta cerrada o conflicto de idempotencia, `410` si el anuncio pendiente venció, `422` para datos inválidos y `403` si alguien distinto al autor solicita el cierre.
+Los diagramas de arquitectura y flujo del servicio están descritos en [`docs/diagramas.md`](docs/diagramas.md).
 
 ## Eventos RabbitMQ
 
