@@ -148,3 +148,9 @@ pytest
 ```
 
 Las pruebas usan SQLite temporal, un publicador falso y un cliente Messages falso; no requieren PostgreSQL, RabbitMQ ni el servicio Messages. FastAPI también publica la documentación OpenAPI en `/docs` y `/redoc`.
+
+## Declaración de uso de inteligencia artificial
+
+Durante el desarrollo de este proyecto se utilizaron principalmente modelos de OpenAI, específicamente GPT-6.1 Sol y GPT-6 Luna, como apoyo transversal en la implementación, resolución de problemas y elaboración de documentación.
+
+La responsabilidad sobre el contenido entregado y las decisiones técnicas adoptadas corresponde a los autores del proyecto.
