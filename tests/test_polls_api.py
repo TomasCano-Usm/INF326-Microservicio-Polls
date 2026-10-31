@@ -410,7 +410,7 @@ def test_startup_and_readiness_do_not_require_rabbitmq_or_messages(
         assert connection_attempts == 0
 
 
-def test_expired_delivery_claim_fences_late_worker(tmp_path) -> None:
+def test_expired_delivery_claim_fences_late_success_and_failure(tmp_path) -> None:
     async def run() -> None:
         database_path = tmp_path / "delivery-lease.sqlite"
         database = Database(f"sqlite+aiosqlite:///{database_path}", create_schema=True)
@@ -472,16 +472,26 @@ def test_expired_delivery_claim_fences_late_worker(tmp_path) -> None:
         assert second_attempt is not None
         assert first_attempt.lease_token != second_attempt.lease_token
 
+        async with database.sessions() as session:
+            delivery = await session.get(MessageDelivery, delivery_id)
+            assert delivery is not None
+            second_lease_until = delivery.lease_until
+            second_attempt_count = delivery.attempt_count
+
         await service._finish_message_failure(
             first_attempt,
             RuntimeError("resultado tardío de un worker vencido"),
             rejected=False,
         )
+        await service._finish_message_success(first_attempt)
+
         async with database.sessions() as session:
             delivery = await session.get(MessageDelivery, delivery_id)
             assert delivery is not None
             assert delivery.status == "processing"
             assert delivery.lease_token == second_attempt.lease_token
+            assert delivery.lease_until == second_lease_until
+            assert delivery.attempt_count == second_attempt_count
 
         await service._finish_message_success(second_attempt)
         async with database.sessions() as session:

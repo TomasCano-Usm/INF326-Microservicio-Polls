@@ -158,4 +158,5 @@ class OutboxEvent(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     next_attempt_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     lease_until: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    lease_token: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)

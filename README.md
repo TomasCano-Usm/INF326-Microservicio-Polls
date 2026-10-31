@@ -138,9 +138,9 @@ git tag -a v1.2.0 -m "Release v1.2.0"
 git push origin v1.2.0
 ```
 
-Publica primero el commit de la versión en `main`. Al subir el tag, el workflow `.github/workflows/release.yml` valida que coincida exactamente con `app/version.py` y crea un GitHub Release con el mismo nombre y notas autogeneradas. El workflow `.github/workflows/publish-image.yml` prueba y publica la imagen a GHCR con tags `vMAJOR.MINOR.PATCH` y `MAJOR.MINOR.PATCH`; `latest` sigue la release. Usa `GITHUB_TOKEN` con permisos mínimos. Si ya existe el release, el workflow no crea un duplicado. El contrato `/api/v1` solo cambia al iniciar una nueva versión mayor de la API.
+Publica primero el commit de la versión en `main`. Al hacer push del tag, el workflow `.github/workflows/release.yml` valida que coincida exactamente con `app/version.py` y crea un GitHub Release con el mismo nombre y notas autogeneradas. El workflow `.github/workflows/publish-image.yml` prueba y publica la imagen a GHCR con tags `vMAJOR.MINOR.PATCH` y `MAJOR.MINOR.PATCH`; `latest` sigue la release. Ejecutar manualmente `Publish GitHub Release` solo crea la GitHub Release y no publica la imagen. La imagen se publica mediante el push del tag. Usa `GITHUB_TOKEN` con permisos mínimos. Si ya existe el release, el workflow no crea un duplicado. El contrato `/api/v1` solo cambia al iniciar una nueva versión mayor de la API.
 
-Para publicar manualmente un tag ya existente, se puede ejecutar `Publish GitHub Release` desde Actions indicando el tag. Por ejemplo:
+Para crear manualmente solo la GitHub Release de un tag existente, se puede ejecutar `Publish GitHub Release` desde Actions indicando el tag. Esto no publica la imagen en GHCR. Por ejemplo:
 
 ```bash
 gh workflow run release.yml --ref main -f tag=v1.2.0
@@ -154,6 +154,15 @@ pytest
 ```
 
 Las pruebas usan SQLite temporal, un publicador falso y un cliente Messages falso; no requieren PostgreSQL, RabbitMQ ni el servicio Messages. FastAPI también publica la documentación OpenAPI en `/docs` y `/redoc`.
+
+La suite opcional [`tests/test_postgres_concurrency.py`](tests/test_postgres_concurrency.py) usa PostgreSQL real para verificar locks de fila con votos concurrentes y la competencia entre cierre manual y automático. Sin `POLLS_TEST_DATABASE_URL`, esos tests se omiten. Levanta PostgreSQL (por ejemplo, `docker compose up -d postgres`), configura esa variable con la URL de una base de pruebas donde el usuario pueda crear schemas y ejecuta:
+
+```bash
+export POLLS_TEST_DATABASE_URL='postgresql+asyncpg://<usuario>:<clave>@localhost:5432/<base_de_pruebas>'
+pytest tests/test_postgres_concurrency.py -q
+```
+
+Cada test crea y elimina su schema aislado; utiliza una base de pruebas, no una base de producción.
 
 ## Declaración de uso de inteligencia artificial
 

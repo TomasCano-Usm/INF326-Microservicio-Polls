@@ -37,18 +37,35 @@ PostgreSQL corre como un StatefulSet de una réplica con el único PVC del names
 
 RabbitMQ corre como un Deployment de una réplica y un Service `ClusterIP` llamado `rabbitmq`; utiliza `rabbitmq:5672` dentro del namespace y no tiene PVC ni clustering.
 
-Cada Pod de Polls conserva sus workers de cierre, outbox y entregas. La concurrencia se coordina en PostgreSQL: locks de fila para votos/cierres, constraints e idempotencia existente, claims atómicos y leases. `message_deliveries.lease_token` funciona como fencing al finalizar cada intento. No se requiere un líder único ni un servicio adicional.
+RabbitMQ tiene `startupProbe` de hasta 180 segundos; liveness y readiness quedan habilitadas después de que `rabbitmq-diagnostics ping` responde. Se mantienen los recursos actuales (`100m/128Mi` requests, `250m/256Mi` limits); revisa memoria y alarmas del broker durante el smoke test.
+
+Cada Pod de Polls conserva sus workers de cierre, outbox y entregas. La concurrencia se coordina en PostgreSQL: locks de fila para votos/cierres, constraints e idempotencia existente, claims atómicos y leases. `message_deliveries.lease_token` y `outbox_events.lease_token` cercan las finalizaciones de claims vencidos. No se requiere un líder único ni un servicio adicional.
 
 ## Migraciones
 
-El comando del contenedor es Uvicorn y no ejecuta Alembic. Compose ejecuta un servicio one-shot `migrate`; Kubernetes usa `k8s/jobs/migration.yaml`, con `parallelism: 1` y `completions: 1`. La migración se debe completar antes de aplicar/actualizar el Deployment de Polls. No se agregó advisory lock porque el flujo mantiene un solo Job activo y no hay migraciones concurrentes por réplica.
+El comando del contenedor es Uvicorn y no ejecuta Alembic. Compose ejecuta un servicio one-shot `migrate`; Kubernetes usa `k8s/jobs/migration.yaml`, con `parallelism: 1` y `completions: 1`. La migración se debe completar antes de aplicar/actualizar el Deployment de Polls; no ejecutes deliberadamente el Job durante un rollout. No se agregó advisory lock porque el flujo mantiene un solo Job activo y no hay migraciones concurrentes por réplica.
 
 Para una nueva migración:
 
 1. Publica la imagen de la nueva release y actualiza el tag concreto en `k8s/jobs/migration.yaml` y `k8s/polls/deployment.yaml`.
-2. Ejecuta `kubectl -n "$NAMESPACE" delete job polls-migration`.
-3. Aplica otra vez el Job y espera su finalización.
-4. Actualiza/aplica el Deployment de Polls.
+2. Si Polls ya está instalado, fija temporalmente el HPA al número actual de réplicas y espera a que no haya Pods `Terminating`:
+
+   ```bash
+   POLLS_REPLICAS="$(kubectl -n "$NAMESPACE" get deployment polls -o jsonpath='{.spec.replicas}')"
+   kubectl -n "$NAMESPACE" patch hpa polls --type merge \
+     -p "{\"spec\":{\"minReplicas\":${POLLS_REPLICAS},\"maxReplicas\":${POLLS_REPLICAS}}}"
+   kubectl -n "$NAMESPACE" get pods -l app=polls
+   ```
+
+3. Ejecuta `kubectl -n "$NAMESPACE" delete job polls-migration`.
+4. Aplica otra vez el Job y espera su finalización.
+5. Actualiza/aplica el Deployment de Polls; `Recreate` reemplaza las réplicas sin solapar versiones.
+6. Restaura el rango del HPA a `minReplicas: 1`, `maxReplicas: 3`:
+
+   ```bash
+   kubectl -n "$NAMESPACE" patch hpa polls --type merge \
+     -p '{"spec":{"minReplicas":1,"maxReplicas":3}}'
+   ```
 
 El borrado del Job no borra datos de PostgreSQL ni el PVC.
 
@@ -99,20 +116,26 @@ Cálculo para los recursos configurados:
 | 1 Polls + PostgreSQL + RabbitMQ | `300m` / `512Mi` | `750m` / `1024Mi` |
 | 3 Polls + PostgreSQL + RabbitMQ | `500m` / `768Mi` | `1250m` / `1536Mi` |
 | 3 Polls + PostgreSQL + RabbitMQ + Job | `550m` / `832Mi` | `1350m` / `1664Mi` |
+| HPA scale-down/up overlap (5 Polls objects + PostgreSQL + RabbitMQ) | `700m` / `1024Mi` | `1750m` / `2048Mi` |
+| HPA scale-down/up overlap plus Job | `750m` / `1088Mi` | `1850m` / `2176Mi` |
 
-El Job cabe incluso cuando el HPA está en tres réplicas. Se ejecuta antes de actualizar el Deployment, por lo que no coincide con el Pod temporal `maxSurge: 1` del rollout. Si se solaparan además ese surge y el Job, el total máximo sería `650m`/`960Mi` en requests y `1600m`/`1920Mi` en limits, todavía dentro de la cuota. El PVC consume exactamente `1Gi`; no se crean otros PVC. Los conteos máximos son seis Pods durante el Job (siete incluyendo el surge), dos Deployments, un StatefulSet, un HPA, tres Services y un PVC; cumplen las cuotas informadas.
+El Job cabe junto a las tres réplicas de Polls. El Deployment usa estrategia `Recreate`: durante una actualización, Kubernetes termina las réplicas antiguas antes de crear las nuevas. Esto evita que Pods antiguos en `Terminating` se solapen con reemplazos, a cambio de una interrupción breve de la API. El flujo recomendado ejecuta y completa el Job antes del rollout: máximo esperado con Job, seis Pods (tres Polls, PostgreSQL, RabbitMQ y el Job); durante el reemplazo de Polls, cinco Pods (tres Polls, PostgreSQL y RabbitMQ), sin Job activo.
+
+Se eligió `Recreate` porque `maxSurge: 0` no da una cota suficiente: con tres réplicas antiguas terminando y tres nuevas activas, requests serían `800m/1152Mi` y limits `2000m/2304Mi` incluso sin Job, excediendo las cuotas de memoria. Con Job simultáneo llegarían a `850m/1216Mi` y `2100m/2432Mi`. El HPA también puede conservar Pods de un scale-down reciente en `Terminating`: un downscale de tres a uno seguido de scale-up puede mantener cinco objetos Polls temporalmente. Sin Job, ese pico queda exactamente en `1Gi` requests y `2Gi` limits de memoria; con Job excedería ambas cuotas. El pico HPA+Job serían ocho Pods en total, dentro del límite de diez, pero no cabría en las cuotas de memoria. Para nuevas migraciones, fija temporalmente `minReplicas` y `maxReplicas` del HPA al número actual de réplicas, espera a que no haya Pods `Terminating`, ejecuta y espera el Job, actualiza Polls con `Recreate` y restaura `minReplicas: 1`/`maxReplicas: 3`. No ejecutes deliberadamente migraciones durante un rollout ni durante una prueba de carga/scale.
+
+El PVC consume exactamente `1Gi`; no se crean otros PVC. Los conteos de recursos declarados son dos Deployments, un StatefulSet, un HPA, tres Services y un PVC; todos cumplen las cuotas informadas.
 
 El HPA usa `autoscaling/v2`, CPU promedio al `70%`, `minReplicas: 1` y `maxReplicas: 3`. Metrics Server está disponible en el clúster. Las cuotas informadas permiten estos valores; si cambian, requests/limits y máximo de réplicas están declarados en los manifests para ajustarse de forma explícita.
 
 ## CI y GHCR
 
 - `.github/workflows/ci.yml` ejecuta pytest en pushes a `main` y pull requests.
-- `.github/workflows/publish-image.yml` prueba antes de construir/publicar en pushes a `main` y tags `vMAJOR.MINOR.PATCH`. Para tags valida que coincidan con `app/version.py`.
+- `.github/workflows/publish-image.yml` prueba antes de construir/publicar en pushes a `main` y en **pushes** de tags `vMAJOR.MINOR.PATCH`. Para tags valida que coincidan con `app/version.py`.
 - Las imágenes de release reciben `v1.2.0`, `1.2.0` y `latest`; los pushes a `main` reciben tags `main` y `sha-<commit>`.
 - Registry: `ghcr.io/tomas-cano-usm/inf326-microservicio-polls`.
 - Publica con `GITHUB_TOKEN` y permisos `contents: read`, `packages: write`. El workflow de release SemVer existente se conserva.
 
-El tag concreto de imagen de los manifests es `1.2.0`; GHCR lo publicará al crear el tag SemVer `v1.2.0`. Antes de desplegar se debe confirmar que esa imagen está publicada. Para una release posterior, actualiza ambos manifests a su versión publicada. El paquete GHCR puede requerir hacerse público o configurar `imagePullSecret`. No hay CD, Argo CD ni GitOps.
+El tag concreto de imagen de los manifests es `1.2.0`; GHCR lo publicará al hacer push del tag SemVer `v1.2.0`. Ejecutar manualmente `Publish GitHub Release` solo crea la GitHub Release y no dispara la publicación de imagen. Antes de desplegar se debe confirmar que la imagen está publicada. Para una release posterior, actualiza ambos manifests a su versión publicada. El paquete GHCR puede requerir hacerse público o configurar `imagePullSecret`. No hay CD, Argo CD ni GitOps.
 
 ## Procedimiento de despliegue futuro
 

@@ -28,6 +28,12 @@ spec:
                 secretKeyRef:
                   name: polls-credentials
                   key: RABBITMQ_PASSWORD
+          startupProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 36
           livenessProbe:
             exec:
               command: ["rabbitmq-diagnostics", "-q", "ping"]

@@ -713,8 +713,10 @@ class PollService:
 
     async def _publish_outbox_event(self, event_id: UUID) -> None:
         now = datetime.now(timezone.utc)
+        lease_token = uuid4()
         event_type: str
         payload: dict[str, object]
+        attempt_count: int
         async with self._sessions() as session, session.begin():
             claim = await session.execute(
                 update(OutboxEvent)
@@ -726,6 +728,7 @@ class PollService:
                 )
                 .values(
                     lease_until=now + timedelta(seconds=LEASE_SECONDS),
+                    lease_token=lease_token,
                     attempt_count=OutboxEvent.attempt_count + 1,
                 )
                 .returning(OutboxEvent.event_id)
@@ -737,25 +740,44 @@ class PollService:
                 return
             event_type = event.event_type
             payload = event.payload
+            attempt_count = event.attempt_count
 
         try:
             await self._event_publisher.publish(event_type, payload, event_id=str(event_id))
         except Exception as error:
             logger.exception("Falló la publicación de %s (%s)", event_type, event_id)
             async with self._sessions() as session, session.begin():
-                event = await session.get(OutboxEvent, event_id)
-                if event is not None and event.published_at is None:
-                    event.lease_until = None
-                    event.last_error = str(error)[:2000]
-                    event.next_attempt_at = now + self._retry_delay(event.attempt_count)
+                await session.execute(
+                    update(OutboxEvent)
+                    .where(
+                        OutboxEvent.event_id == event_id,
+                        OutboxEvent.published_at.is_(None),
+                        OutboxEvent.lease_token == lease_token,
+                    )
+                    .values(
+                        lease_until=None,
+                        lease_token=None,
+                        last_error=str(error)[:2000],
+                        next_attempt_at=now + self._retry_delay(attempt_count),
+                    )
+                )
             return
 
         async with self._sessions() as session, session.begin():
-            event = await session.get(OutboxEvent, event_id)
-            if event is not None and event.published_at is None:
-                event.published_at = datetime.now(timezone.utc)
-                event.lease_until = None
-                event.last_error = None
+            await session.execute(
+                update(OutboxEvent)
+                .where(
+                    OutboxEvent.event_id == event_id,
+                    OutboxEvent.published_at.is_(None),
+                    OutboxEvent.lease_token == lease_token,
+                )
+                .values(
+                    published_at=datetime.now(timezone.utc),
+                    lease_until=None,
+                    lease_token=None,
+                    last_error=None,
+                )
+            )
 
     async def _read_poll(self, poll_id: UUID) -> PollResponse:
         async with self._sessions() as session:
