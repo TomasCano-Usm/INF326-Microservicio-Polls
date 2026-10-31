@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from uuid import UUID
 
-from fastapi import FastAPI, Header, Request, status
+from fastapi import FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from app.db import Database
@@ -78,6 +78,21 @@ def create_app(
 
     @application.get("/health", tags=["Salud"])
     async def health_check() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @application.get("/health/live", tags=["Salud"])
+    async def liveness_check() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @application.get("/health/ready", tags=["Salud"])
+    async def readiness_check(request: Request) -> dict[str, str]:
+        try:
+            await asyncio.wait_for(request.app.state.database.check_connection(), timeout=2)
+        except Exception as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="PostgreSQL no disponible.",
+            ) from error
         return {"status": "ok"}
 
     @application.post(

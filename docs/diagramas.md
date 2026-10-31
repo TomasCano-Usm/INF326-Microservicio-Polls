@@ -13,3 +13,5 @@ El cliente interactúa con el microservicio de Encuestas mediante la API REST pa
 ![Diagrama de flujo de creación, consulta, votación y cierre](../assets/Diagrama_flujo.png)
 
 El usuario creador envía la pregunta, las alternativas y la duración. Polls crea la encuesta, programa su cierre y solicita a Messages publicar el anuncio en el canal. Al completarse la duración, Polls bloquea las respuestas y solicita la publicación de los resultados finales. Un usuario votante puede consultar la encuesta y enviar su voto; Polls busca la encuesta, valida los datos y almacena la respuesta.
+
+La topología Kubernetes de la Unidad 05 y sus recursos están descritos en [`kubernetes.md`](kubernetes.md). El despliegue conserva Messages, Users y Channels como servicios externos del core del curso.

@@ -1,4 +1,6 @@
 .git
+*.kubeconfig
+.kubeconfig
 .env
 .env.*
 !.env.example

@@ -42,10 +42,14 @@ class Database:
         self._create_schema = create_schema
 
     async def connect(self) -> None:
+        await self.check_connection()
+        if self._create_schema:
+            async with self.engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+
+    async def check_connection(self) -> None:
         async with self.engine.connect() as connection:
             await connection.execute(select(1))
-            if self._create_schema:
-                await connection.run_sync(Base.metadata.create_all)
 
     async def close(self) -> None:
         await self.engine.dispose()

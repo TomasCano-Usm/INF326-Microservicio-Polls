@@ -9,6 +9,8 @@ La especificación OpenAPI está disponible en `/openapi.json`; la interfaz inte
 | Método | Ruta | Propósito | Respuesta de éxito |
 | --- | --- | --- | --- |
 | `GET` | `/health` | Comprueba que la API responde. | `200` |
+| `GET` | `/health/live` | Comprueba que el proceso está vivo. | `200` |
+| `GET` | `/health/ready` | Comprueba disponibilidad de PostgreSQL. | `200` |
 | `POST` | `/api/v1/polls` | Crea una encuesta. | `200`, `201` o `202` |
 | `POST` | `/api/v1/polls/{poll_id}/votes` | Registra un voto. | `201` |
 | `POST` | `/api/v1/polls/{poll_id}/close` | Cierra una encuesta. | `200` |
@@ -25,6 +27,8 @@ Respuesta `200`:
   "status": "ok"
 }
 ```
+
+`GET /health/live` es deliberadamente independiente de PostgreSQL, RabbitMQ y Messages. `GET /health/ready` ejecuta `SELECT 1` en PostgreSQL y responde `503` si la base de datos no está disponible. RabbitMQ y Messages no forman parte de readiness: sus operaciones pendientes se conservan y reintentan.
 
 ## Crear encuesta
 

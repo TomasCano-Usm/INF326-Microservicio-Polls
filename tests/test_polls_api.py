@@ -1,15 +1,19 @@
+import asyncio
 import logging
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.db import Database
+from app.events import RabbitMQEventPublisher
 from app.main import create_app
 from app.messages import DisabledMessagesClient, MessagesRejected, MessagesUnavailable
+from app.service import PollService
+from app.tables import MessageDelivery, Poll, PollOption
 
 
 class FakePublisher:
@@ -360,3 +364,132 @@ def test_messages_enabled_rejects_invalid_flag(monkeypatch: pytest.MonkeyPatch) 
 
     with pytest.raises(ValueError, match="MESSAGES_ENABLED debe ser true o false"):
         messages_client_from_env()
+
+
+def test_health_endpoints_keep_liveness_up_when_postgres_is_unavailable(api, monkeypatch) -> None:
+    client, _publisher, _messages, _database_path = api
+
+    assert client.get("/health").status_code == 200
+    assert client.get("/health/live").status_code == 200
+    assert client.get("/health/ready").status_code == 200
+
+    async def fail_connection() -> None:
+        raise OSError("PostgreSQL no disponible")
+
+    monkeypatch.setattr(client.app.state.database, "check_connection", fail_connection)
+    assert client.get("/health/live").status_code == 200
+    assert client.get("/health/ready").status_code == 503
+
+
+def test_startup_and_readiness_do_not_require_rabbitmq_or_messages(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("MESSAGES_ENABLED", "true")
+    monkeypatch.setenv("MESSAGES_BASE_URL", "http://messages.invalid:8000")
+    database_path = tmp_path / "polls-external-health.sqlite"
+    publisher = RabbitMQEventPublisher()
+    connection_attempts = 0
+
+    async def unavailable_broker(*_args, **_kwargs):
+        nonlocal connection_attempts
+        connection_attempts += 1
+        raise OSError("RabbitMQ no disponible")
+
+    monkeypatch.setattr("app.events.aio_pika.connect_robust", unavailable_broker)
+    application = create_app(
+        lambda: publisher,
+        database_factory=lambda: Database(
+            f"sqlite+aiosqlite:///{database_path}", create_schema=True
+        ),
+    )
+
+    with TestClient(application) as client:
+        assert client.get("/health/live").status_code == 200
+        assert client.get("/health/ready").status_code == 200
+        assert connection_attempts == 0
+
+
+def test_expired_delivery_claim_fences_late_worker(tmp_path) -> None:
+    async def run() -> None:
+        database_path = tmp_path / "delivery-lease.sqlite"
+        database = Database(f"sqlite+aiosqlite:///{database_path}", create_schema=True)
+        await database.connect()
+
+        now = datetime.now(timezone.utc)
+        poll_id = uuid4()
+        delivery_id = uuid4()
+        option_id = uuid4()
+        async with database.sessions() as session, session.begin():
+            session.add(
+                Poll(
+                    poll_id=poll_id,
+                    channel_id="channel-123",
+                    author_id="user-author",
+                    question="¿Qué alternativa prefieres?",
+                    status="closed",
+                    duration_minutes=5,
+                    created_at=now - timedelta(minutes=5),
+                    closes_at=now,
+                    closed_at=now,
+                    options=[
+                        PollOption(
+                            option_id=option_id,
+                            position=0,
+                            text="Alternativa A",
+                            normalized_text="alternativa a",
+                        )
+                    ],
+                )
+            )
+            session.add(
+                MessageDelivery(
+                    delivery_id=delivery_id,
+                    poll_id=poll_id,
+                    kind="final_results",
+                    status="pending",
+                    attempt_count=0,
+                    next_attempt_at=now,
+                    created_at=now,
+                )
+            )
+
+        service = PollService(database, FakePublisher(), FakeMessagesClient())
+        claims = await asyncio.gather(
+            service._claim_message_delivery(delivery_id),
+            service._claim_message_delivery(delivery_id),
+        )
+        assert sum(claim is not None for claim in claims) == 1
+        first_attempt = next(claim for claim in claims if claim is not None)
+        assert await service._claim_message_delivery(delivery_id) is None
+
+        async with database.sessions() as session, session.begin():
+            delivery = await session.get(MessageDelivery, delivery_id)
+            assert delivery is not None
+            delivery.lease_until = now - timedelta(seconds=1)
+
+        second_attempt = await service._claim_message_delivery(delivery_id)
+        assert second_attempt is not None
+        assert first_attempt.lease_token != second_attempt.lease_token
+
+        await service._finish_message_failure(
+            first_attempt,
+            RuntimeError("resultado tardío de un worker vencido"),
+            rejected=False,
+        )
+        async with database.sessions() as session:
+            delivery = await session.get(MessageDelivery, delivery_id)
+            assert delivery is not None
+            assert delivery.status == "processing"
+            assert delivery.lease_token == second_attempt.lease_token
+
+        await service._finish_message_success(second_attempt)
+        async with database.sessions() as session:
+            delivery = await session.get(MessageDelivery, delivery_id)
+            assert delivery is not None
+            assert delivery.status == "sent"
+            assert delivery.lease_token is None
+
+        await database.close()
+
+    asyncio.run(run())

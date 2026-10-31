@@ -1,4 +1,14 @@
 services:
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: "${DATABASE_URL:-postgresql+asyncpg://polls:polls-dev-password@postgres:5432/polls}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   polls-api:
     build: .
     ports:
@@ -15,8 +25,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      rabbitmq:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     restart: unless-stopped

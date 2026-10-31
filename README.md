@@ -1,7 +1,7 @@
 # INF326-Microservicio-Polls
-Repositorio público para la implementación de un microservicio de encuestas en el contexto de la asignatura inf326, UTFSM 
+Repositorio público para la implementación de un microservicio de encuestas en el contexto de la asignatura inf326, UTFSM
 
-> **Versión actual: `1.1.0`** · Tag de release: **`v1.1.0`** · API REST: **`/api/v1`**
+> **Versión del código: `1.2.0`** · Próximo tag SemVer: **`v1.2.0`** · API REST: **`/api/v1`**
 
 La versión del servicio también aparece en la metadata OpenAPI de FastAPI (`/openapi.json` y `/docs`). Su fuente única está en `app/version.py`.
 
@@ -31,7 +31,7 @@ Si Messages corre en el host, usa `MESSAGES_BASE_URL=http://host.docker.internal
 - OpenAPI/Swagger: `http://localhost:8004/docs`
 - PostgreSQL: `localhost:5432` (base/usuario `polls`, clave de desarrollo `polls-dev-password`)
 - RabbitMQ Management: `http://localhost:15672` (usuario `polls`, clave `polls-dev-password`)
-- Health check: `GET http://localhost:8004/health`
+- Health checks: `/health`, `/health/live` y `/health/ready` en `http://localhost:8004`
 
 Cuando `MESSAGES_ENABLED=false`, Polls omite y registra los anuncios/resultados, sin hacer requests HTTP; las encuestas, votos, cierres y eventos siguen funcionando. Para Messages fuera de este Compose, la URL indicada debe ser accesible desde el contenedor Polls. El puerto host de Polls se puede cambiar con `POLLS_PORT`; `POLL_CLOSE_SCAN_INTERVAL_SECONDS` configura la revisión de vencimientos y `POLL_RETRY_BASE_SECONDS` el backoff inicial de reintentos.
 
@@ -65,6 +65,8 @@ En Windows, activa el entorno con `.venv\Scripts\activate` y define `DATABASE_UR
 | Método | Ruta | Propósito |
 | --- | --- | --- |
 | `GET` | `/health` | Comprueba disponibilidad. |
+| `GET` | `/health/live` | Comprueba que el proceso responde. |
+| `GET` | `/health/ready` | Comprueba conectividad con PostgreSQL. |
 | `POST` | `/api/v1/polls` | Crea una encuesta. |
 | `POST` | `/api/v1/polls/{poll_id}/votes` | Registra un voto. |
 | `POST` | `/api/v1/polls/{poll_id}/close` | Cierra una encuesta. |
@@ -73,6 +75,10 @@ En Windows, activa el entorno con `.venv\Scripts\activate` y define `DATABASE_UR
 La referencia de parámetros, cuerpos y ejemplos está en [`docs/api.md`](docs/api.md). La documentación interactiva está disponible en `/docs` y `/redoc`.
 
 Los diagramas de arquitectura y flujo del servicio están descritos en [`docs/diagramas.md`](docs/diagramas.md).
+
+## Kubernetes (Unidad 05)
+
+Los manifests, límites de recursos, migración mediante Job, integración con Messages del core y comandos futuros de despliegue están documentados en [`docs/kubernetes.md`](docs/kubernetes.md). Polls se configura con `MESSAGES_ENABLED=true` y usa `http://messages.servicios-base.svc.cluster.local:8000`; no se despliegan Users, Channels ni Messages. Kubernetes utiliza PostgreSQL persistente (un PVC de 1 GiB), RabbitMQ efímero, readiness/liveness y HPA de 1 a 3 Pods. No hay CD al clúster.
 
 ## Eventos RabbitMQ
 
@@ -107,7 +113,7 @@ El timeout de Messages se configura con `MESSAGES_TIMEOUT_SECONDS` (5 segundos p
 
 ## Persistencia
 
-Alembic aplica las migraciones al iniciar el contenedor. El esquema incluye:
+Compose aplica migraciones mediante un servicio one-shot antes de iniciar la API. En Kubernetes se ejecutan explícitamente con `k8s/jobs/migration.yaml`; el Deployment de Polls inicia Uvicorn directamente. El esquema incluye:
 
 - `polls`: ciclo de vida, IDs externos, duración, fechas y clave de idempotencia.
 - `poll_options`: alternativas ordenadas y únicas por texto normalizado dentro de cada encuesta.
@@ -125,19 +131,19 @@ Polls usa versionado semántico **`MAJOR.MINOR.PATCH`**:
 - **MINOR:** funcionalidad nueva compatible. Mantiene el prefijo REST existente.
 - **PATCH:** correcciones compatibles sin cambios de contrato.
 
-Para cada release, actualiza `__version__` en `app/version.py` y la versión actual indicada al inicio de este README. FastAPI toma automáticamente ese valor para OpenAPI. Los tags publicados usan el prefijo `v` seguido de la versión, por ejemplo `v1.1.0`:
+Para cada release, actualiza `__version__` en `app/version.py` y la versión indicada al inicio de este README. FastAPI toma automáticamente ese valor para OpenAPI. Los tags publicados usan el prefijo `v` seguido de la versión, por ejemplo `v1.2.0`:
 
 ```bash
-git tag -a v1.1.0 -m "Release v1.1.0"
-git push origin v1.1.0
+git tag -a v1.2.0 -m "Release v1.2.0"
+git push origin v1.2.0
 ```
 
-Publica primero el commit de la versión en `main`. Al subir el tag, el workflow `.github/workflows/release.yml` valida que coincida exactamente con `app/version.py` y crea un GitHub Release con el mismo nombre y notas autogeneradas. Usa exclusivamente el `GITHUB_TOKEN` de Actions, con permiso `contents: write`; si ya existe el release, no crea un duplicado. El contrato `/api/v1` solo cambia al iniciar una nueva versión mayor de la API.
+Publica primero el commit de la versión en `main`. Al subir el tag, el workflow `.github/workflows/release.yml` valida que coincida exactamente con `app/version.py` y crea un GitHub Release con el mismo nombre y notas autogeneradas. El workflow `.github/workflows/publish-image.yml` prueba y publica la imagen a GHCR con tags `vMAJOR.MINOR.PATCH` y `MAJOR.MINOR.PATCH`; `latest` sigue la release. Usa `GITHUB_TOKEN` con permisos mínimos. Si ya existe el release, el workflow no crea un duplicado. El contrato `/api/v1` solo cambia al iniciar una nueva versión mayor de la API.
 
-Para publicar un tag anterior que ya existía antes del workflow, se puede ejecutar manualmente en Actions `Publish GitHub Release` indicando el tag. Por ejemplo, el release inicial de la versión actual se puede crear con:
+Para publicar manualmente un tag ya existente, se puede ejecutar `Publish GitHub Release` desde Actions indicando el tag. Por ejemplo:
 
 ```bash
-gh workflow run release.yml --ref main -f tag=v1.1.0
+gh workflow run release.yml --ref main -f tag=v1.2.0
 ```
 
 ## Pruebas

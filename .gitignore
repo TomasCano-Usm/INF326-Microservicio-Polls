@@ -1,6 +1,11 @@
 .env
 .env.*
 !.env.example
+
+# Kubernetes credentials
+*.kubeconfig
+.kubeconfig
+
 .venv/
 __pycache__/
 *.py[cod]

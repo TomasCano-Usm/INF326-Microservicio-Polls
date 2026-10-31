@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: polls-config
+data:
+  MESSAGES_ENABLED: "true"
+  MESSAGES_BASE_URL: "http://messages.servicios-base.svc.cluster.local:8000"
+  MESSAGES_TIMEOUT_SECONDS: "5"
+  RABBITMQ_EXCHANGE: "polls.events"
+  POLL_CLOSE_SCAN_INTERVAL_SECONDS: "1"
+  POLL_RETRY_BASE_SECONDS: "1"

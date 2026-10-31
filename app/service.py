@@ -44,6 +44,7 @@ class CreatePollResult:
 @dataclass(slots=True)
 class MessageAttempt:
     delivery_id: UUID
+    lease_token: UUID
     poll_id: UUID
     kind: Literal["announcement", "final_results"]
     channel_id: str
@@ -395,9 +396,6 @@ class PollService:
     async def _expire_pending_announcement(self, poll_id: UUID) -> None:
         now = datetime.now(timezone.utc)
         async with self._sessions() as session, session.begin():
-            poll = await self._locked_poll(session, poll_id)
-            if poll is None or poll.status != "pending_announcement" or poll.closes_at > now:
-                return
             delivery = await session.scalar(
                 select(MessageDelivery)
                 .where(
@@ -406,6 +404,9 @@ class PollService:
                 )
                 .with_for_update()
             )
+            poll = await self._locked_poll(session, poll_id)
+            if poll is None or poll.status != "pending_announcement" or poll.closes_at > now:
+                return
             if delivery is not None and delivery.status == "processing":
                 if delivery.lease_until is not None and delivery.lease_until > now:
                     return
@@ -415,6 +416,7 @@ class PollService:
             if delivery is not None and delivery.status != "sent":
                 delivery.status = "failed"
                 delivery.lease_until = None
+                delivery.lease_token = None
                 delivery.last_error = poll.creation_error_detail
 
     async def _find_idempotent_poll(self, author_id: str, key: str) -> UUID | None:
@@ -510,6 +512,7 @@ class PollService:
                 .values(
                     status="skipped",
                     lease_until=None,
+                    lease_token=None,
                     last_error="Omitido: integración con Messages deshabilitada.",
                 )
                 .returning(MessageDelivery.poll_id, MessageDelivery.kind)
@@ -545,6 +548,7 @@ class PollService:
 
     async def _claim_message_delivery(self, delivery_id: UUID) -> MessageAttempt | None:
         now = datetime.now(timezone.utc)
+        lease_token = uuid4()
         async with self._sessions() as session, session.begin():
             claim = await session.execute(
                 update(MessageDelivery)
@@ -568,6 +572,7 @@ class PollService:
                     status="processing",
                     attempt_count=MessageDelivery.attempt_count + 1,
                     lease_until=now + timedelta(seconds=LEASE_SECONDS),
+                    lease_token=lease_token,
                 )
                 .returning(MessageDelivery.delivery_id)
             )
@@ -580,12 +585,16 @@ class PollService:
             poll = await self._locked_poll(session, delivery.poll_id)
             if poll is None:
                 delivery.status = "failed"
+                delivery.lease_until = None
+                delivery.lease_token = None
                 delivery.last_error = "Encuesta no encontrada."
                 return None
 
             if delivery.kind == "announcement":
                 if poll.status != "pending_announcement":
                     delivery.status = "failed"
+                    delivery.lease_until = None
+                    delivery.lease_token = None
                     delivery.last_error = "La encuesta ya no está pendiente de anuncio."
                     return None
                 if poll.closes_at <= now:
@@ -593,10 +602,14 @@ class PollService:
                     poll.creation_error_status = status.HTTP_410_GONE
                     poll.creation_error_detail = "La duración venció antes de publicar el anuncio."
                     delivery.status = "failed"
+                    delivery.lease_until = None
+                    delivery.lease_token = None
                     delivery.last_error = poll.creation_error_detail
                     return None
             elif poll.status != "closed":
                 delivery.status = "failed"
+                delivery.lease_until = None
+                delivery.lease_token = None
                 delivery.last_error = "La encuesta no está cerrada."
                 return None
 
@@ -608,6 +621,7 @@ class PollService:
             )
             return MessageAttempt(
                 delivery_id=delivery.delivery_id,
+                lease_token=lease_token,
                 poll_id=poll.poll_id,
                 kind=delivery.kind,
                 channel_id=poll.channel_id,
@@ -618,13 +632,24 @@ class PollService:
     async def _finish_message_success(self, attempt: MessageAttempt) -> None:
         now = datetime.now(timezone.utc)
         async with self._sessions() as session, session.begin():
-            delivery = await session.get(MessageDelivery, attempt.delivery_id)
+            delivery = await session.scalar(
+                select(MessageDelivery)
+                .where(MessageDelivery.delivery_id == attempt.delivery_id)
+                .with_for_update()
+            )
+            if (
+                delivery is None
+                or delivery.status != "processing"
+                or delivery.lease_token != attempt.lease_token
+            ):
+                return
             poll = await self._locked_poll(session, attempt.poll_id)
-            if delivery is None or poll is None or delivery.status in {"sent", "skipped"}:
+            if poll is None:
                 return
             delivery.status = "sent" if self._messages_client.enabled else "skipped"
             delivery.sent_at = now if self._messages_client.enabled else None
             delivery.lease_until = None
+            delivery.lease_token = None
             delivery.last_error = (
                 None
                 if self._messages_client.enabled
@@ -660,12 +685,20 @@ class PollService:
     ) -> None:
         now = datetime.now(timezone.utc)
         async with self._sessions() as session, session.begin():
-            delivery = await session.get(MessageDelivery, attempt.delivery_id)
-            poll = await self._locked_poll(session, attempt.poll_id)
-            if delivery is None or delivery.status == "sent":
+            delivery = await session.scalar(
+                select(MessageDelivery)
+                .where(MessageDelivery.delivery_id == attempt.delivery_id)
+                .with_for_update()
+            )
+            if (
+                delivery is None
+                or delivery.status != "processing"
+                or delivery.lease_token != attempt.lease_token
+            ):
                 return
-
+            poll = await self._locked_poll(session, attempt.poll_id)
             delivery.lease_until = None
+            delivery.lease_token = None
             delivery.last_error = str(error)[:2000]
             if rejected:
                 delivery.status = "failed"
