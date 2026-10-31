@@ -17,7 +17,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: polls
-          image: ghcr.io/tomas-cano-usm/inf326-microservicio-polls:1.2.0
+          image: ghcr.io/tomascano-usm/inf326-microservicio-polls:1.2.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
