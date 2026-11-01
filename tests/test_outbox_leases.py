@@ -2,6 +2,8 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+import pytest
+
 from app.db import Database
 from app.service import PollService
 from app.tables import OutboxEvent, Poll
@@ -138,3 +140,70 @@ def test_late_outbox_failure_cannot_clear_newer_lease(tmp_path) -> None:
 
 def test_late_outbox_success_cannot_clear_newer_lease(tmp_path) -> None:
     run_late_outbox_attempt("success", tmp_path)
+
+
+def test_slow_outbox_publish_times_out_and_schedules_retry_from_failure_time(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SlowPublisher:
+        async def connect(self) -> None:
+            return None
+
+        async def publish(self, *_args, **_kwargs) -> None:
+            await asyncio.sleep(1)
+
+        async def close(self) -> None:
+            return None
+
+    async def run() -> None:
+        database_path = tmp_path / "outbox-publish-timeout.sqlite"
+        database = Database(f"sqlite+aiosqlite:///{database_path}", create_schema=True)
+        await database.connect()
+        now = datetime.now(timezone.utc)
+        poll_id = uuid4()
+        event_id = uuid4()
+        async with database.sessions() as session, session.begin():
+            session.add(
+                Poll(
+                    poll_id=poll_id,
+                    channel_id="channel-timeout",
+                    author_id="user-timeout",
+                    question="Pregunta de timeout",
+                    status="open",
+                    duration_minutes=5,
+                    created_at=now,
+                    closes_at=now + timedelta(minutes=5),
+                )
+            )
+            session.add(
+                OutboxEvent(
+                    event_id=event_id,
+                    poll_id=poll_id,
+                    event_type="poll.created",
+                    payload={"poll_id": str(poll_id)},
+                    occurred_at=now,
+                    attempt_count=0,
+                    next_attempt_at=now,
+                )
+            )
+
+        monkeypatch.setenv("POLL_RETRY_BASE_SECONDS", "0.02")
+        monkeypatch.setattr("app.service.OUTBOX_PUBLISH_TIMEOUT_SECONDS", 0.05)
+        service = PollService(database, SlowPublisher(), DisabledMessages())
+        await service._publish_outbox_event(event_id)
+        checked_at = datetime.now(timezone.utc)
+
+        async with database.sessions() as session:
+            event = await session.get(OutboxEvent, event_id)
+            assert event is not None
+            assert event.published_at is None
+            assert event.lease_until is None
+            assert event.lease_token is None
+            assert event.attempt_count == 1
+            assert event.next_attempt_at > checked_at
+            assert event.last_error is not None
+
+        await database.close()
+
+    asyncio.run(run())

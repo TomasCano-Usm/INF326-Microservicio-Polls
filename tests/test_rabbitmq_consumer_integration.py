@@ -33,6 +33,63 @@ def consumer_url(admin_url: str, username: str, password: str) -> str:
     return urlunsplit(("amqp", authority, "/%2F", "", ""))
 
 
+def test_event_publisher_retries_when_exchange_has_no_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        assert ADMIN_AMQP_URL is not None
+        exchange_name = f"polls.audit.{uuid4().hex}"
+        queue_name = f"polls.audit.{uuid4().hex}"
+        monkeypatch.setenv("RABBITMQ_URL", ADMIN_AMQP_URL)
+        monkeypatch.setenv("RABBITMQ_EXCHANGE", exchange_name)
+
+        admin_connection = await aio_pika.connect(ADMIN_AMQP_URL, timeout=5)
+        publisher = RabbitMQEventPublisher()
+        exchange = None
+        try:
+            admin_channel = await admin_connection.channel()
+            exchange = await admin_channel.declare_exchange(
+                exchange_name,
+                aio_pika.ExchangeType.TOPIC,
+                durable=True,
+            )
+            queue = await admin_channel.declare_queue(
+                queue_name,
+                durable=False,
+                exclusive=True,
+                auto_delete=True,
+            )
+
+            with pytest.raises(aio_pika.exceptions.DeliveryError):
+                await publisher.publish(
+                    "poll.created",
+                    {"poll_id": str(uuid4())},
+                    event_id=str(uuid4()),
+                )
+
+            await queue.bind(exchange, routing_key="poll.created")
+            event_id = str(uuid4())
+            await publisher.publish(
+                "poll.created",
+                {"poll_id": str(uuid4())},
+                event_id=event_id,
+            )
+            message = await queue.get(timeout=5, fail=True)
+            async with message.process():
+                envelope = json.loads(message.body)
+                assert envelope["event_id"] == event_id
+                assert envelope["event_type"] == "poll.created"
+        finally:
+            await publisher.close()
+            try:
+                if exchange is not None:
+                    await exchange.delete(if_unused=False)
+            finally:
+                await admin_connection.close()
+
+    asyncio.run(run())
+
+
 def test_external_consumer_acl_publish_denial_and_reprovisioning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -132,5 +189,6 @@ def test_external_consumer_acl_publish_denial_and_reprovisioning(
                 await consumer_connection.close()
             if publisher is not None:
                 await publisher.close()
+            await remover.reconcile()
 
     asyncio.run(run())

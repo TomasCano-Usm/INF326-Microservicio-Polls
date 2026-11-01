@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 LEASE_SECONDS = 30
 MAX_RETRY_SECONDS = 300
+OUTBOX_PUBLISH_TIMEOUT_SECONDS = 10
 
 
 @dataclass(slots=True)
@@ -743,9 +744,13 @@ class PollService:
             attempt_count = event.attempt_count
 
         try:
-            await self._event_publisher.publish(event_type, payload, event_id=str(event_id))
+            await asyncio.wait_for(
+                self._event_publisher.publish(event_type, payload, event_id=str(event_id)),
+                timeout=OUTBOX_PUBLISH_TIMEOUT_SECONDS,
+            )
         except Exception as error:
             logger.exception("Falló la publicación de %s (%s)", event_type, event_id)
+            retry_at = datetime.now(timezone.utc) + self._retry_delay(attempt_count)
             async with self._sessions() as session, session.begin():
                 await session.execute(
                     update(OutboxEvent)
@@ -758,7 +763,7 @@ class PollService:
                         lease_until=None,
                         lease_token=None,
                         last_error=str(error)[:2000],
-                        next_attempt_at=now + self._retry_delay(attempt_count),
+                        next_attempt_at=retry_at,
                     )
                 )
             return

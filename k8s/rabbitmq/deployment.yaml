@@ -4,6 +4,8 @@ metadata:
   name: rabbitmq
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: rabbitmq
@@ -23,6 +25,11 @@ spec:
             - name: management
               containerPort: 15672
               protocol: TCP
+          volumeMounts:
+            - name: rabbitmq-config
+              mountPath: /etc/rabbitmq/conf.d/30-resource-limits.conf
+              subPath: rabbitmq.conf
+              readOnly: true
           env:
             - name: RABBITMQ_DEFAULT_USER
               value: polls
@@ -32,23 +39,26 @@ spec:
                   name: polls-credentials
                   key: RABBITMQ_PASSWORD
           startupProbe:
-            exec:
-              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            tcpSocket:
+              port: amqp
             periodSeconds: 5
-            timeoutSeconds: 5
+            timeoutSeconds: 1
             failureThreshold: 36
           livenessProbe:
-            exec:
-              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            tcpSocket:
+              port: amqp
             periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 3
+            timeoutSeconds: 1
+            failureThreshold: 6
           readinessProbe:
             exec:
-              command: ["rabbitmq-diagnostics", "-q", "ping"]
+              command:
+                - bash
+                - -ec
+                - "</dev/tcp/127.0.0.1/5672 && </dev/tcp/127.0.0.1/15672"
             periodSeconds: 5
-            timeoutSeconds: 5
-            failureThreshold: 3
+            timeoutSeconds: 1
+            failureThreshold: 2
           resources:
             requests:
               cpu: 100m
@@ -65,3 +75,7 @@ spec:
               type: RuntimeDefault
             capabilities:
               drop: ["ALL"]
+      volumes:
+        - name: rabbitmq-config
+          configMap:
+            name: rabbitmq-config

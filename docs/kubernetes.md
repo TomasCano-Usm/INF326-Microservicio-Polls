@@ -23,7 +23,11 @@ Los recursos están organizados en `k8s/polls/`, `k8s/postgres/`, `k8s/rabbitmq/
 - `/health/ready` ejecuta `SELECT 1` en PostgreSQL. Si falla, responde `503` y Kubernetes deja de enviar tráfico al Pod.
 - RabbitMQ y Messages no afectan readiness. PostgreSQL es la dependencia crítica para procesar solicitudes.
 
-El publicador RabbitMQ conecta de manera lazy al intentar publicar. Si el broker no está disponible, el evento permanece en `outbox_events` y se reintenta con el backoff existente. Las publicaciones usan exchange durable, mensajes persistentes y publisher confirms.
+El lifespan de Polls sí verifica PostgreSQL antes de iniciar Uvicorn. Si PostgreSQL está caído al arrancar, el proceso termina y Kubernetes lo reinicia; por eso el despliegue espera a PostgreSQL antes de crear Polls. Si PostgreSQL cae después de arrancar, liveness sigue en `200`, readiness pasa a `503` y el contenedor no se reinicia por ese probe.
+
+El publicador RabbitMQ conecta de manera lazy al intentar publicar. Un intento está limitado a 10 segundos; si falla, el worker libera el lease y programa el retry con backoff calculado desde el instante del fallo. El canal usa publisher confirms y `on_return_raises`: un confirm sin ninguna queue enrutada no marca el evento como publicado. El outbox conserva el evento y reintenta hasta que exista al menos una binding para su routing key.
+
+Si `CONSUMERS_JSON` está vacío, no hay bindings de consumers y los eventos permanecen pendientes en PostgreSQL hasta provisionar una integración. Vigila el crecimiento de `outbox_events` si se mantiene esa configuración mientras se crean encuestas/votos; una vez configurados consumers, el worker entrega los eventos pendientes según su backoff (máximo 300 s).
 
 El outbox ofrece entrega *at-least-once*, no exactly-once. Una caída después de la confirmación del broker y antes de guardar `published_at` puede repetir un evento; el `event_id` estable permite deduplicación por consumidores.
 
@@ -43,11 +47,32 @@ El volumen `do-block-storage` es RWO y usa ext4 por defecto. El CSIDriver de Dig
 
 Los probes `startupProbe`, `livenessProbe` y `readinessProbe` siguen ejecutando `pg_isready -U polls -d polls` dentro del container PostgreSQL. El socket Unix permanece en `/var/run/postgresql`, propiedad del UID `70`, por lo que el probe conserva su comportamiento.
 
-RabbitMQ corre como un Deployment de una réplica con `rabbitmq:4-management-alpine`. La imagen oficial crea al usuario `rabbitmq` con UID `100` y GID `101` (`adduser -u 100`, `addgroup -g 101` en su [Dockerfile Alpine](https://github.com/docker-library/rabbitmq/blob/master/Dockerfile-alpine.template)); la imagen descargada confirma esos IDs y no declara un `USER` predeterminado. Se fijan explícitamente en el `securityContext` junto con `runAsNonRoot: true`. Sin esta configuración, el proceso empieza como root y el [entrypoint oficial](https://github.com/docker-library/rabbitmq/blob/master/docker-entrypoint.sh) intenta ajustar propietarios bajo `/var/lib/rabbitmq` y cambiar a `rabbitmq` mediante `su-exec`. Esa transición llama `setgroups()` y falla con `capabilities.drop: [ALL]` (`Operation not permitted`) porque no dispone de `CAP_SETGID`. Al arrancar directamente como UID/GID `100:101`, se omite la transición root→rabbitmq y no se requieren capabilities. La imagen prepara `/var/lib/rabbitmq`, `/etc/rabbitmq` y `/var/log/rabbitmq` para que el usuario de servicio pueda inicializarlos y escribir en ellos sin PVC.
+RabbitMQ corre como un Deployment de una réplica con `rabbitmq:4-management-alpine` y estrategia `Recreate`. Durante la actualización se detiene el broker anterior antes de crear el nuevo: habrá una interrupción breve y no habrá dos brokers independientes detrás del Service. No representa HA; Polls conserva/reintenta eventos sin publicar. La recreación pierde estado efímero y requiere ejecutar de nuevo el provisioner después de que RabbitMQ esté listo.
+
+La imagen oficial crea al usuario `rabbitmq` con UID `100` y GID `101` (`adduser -u 100`, `addgroup -g 101` en su [Dockerfile Alpine](https://github.com/docker-library/rabbitmq/blob/master/Dockerfile-alpine.template)); la imagen descargada confirma esos IDs y no declara un `USER` predeterminado. Se fijan explícitamente en el `securityContext` junto con `runAsNonRoot: true`. Sin esta configuración, el proceso empieza como root y el [entrypoint oficial](https://github.com/docker-library/rabbitmq/blob/master/docker-entrypoint.sh) intenta ajustar propietarios bajo `/var/lib/rabbitmq` y cambiar a `rabbitmq` mediante `su-exec`. Esa transición llama `setgroups()` y falla con `capabilities.drop: [ALL]` (`Operation not permitted`) porque no dispone de `CAP_SETGID`. Al arrancar directamente como UID/GID `100:101`, se omite la transición root→rabbitmq y no se requieren capabilities. La imagen prepara `/var/lib/rabbitmq`, `/etc/rabbitmq` y `/var/log/rabbitmq` para que el usuario de servicio pueda inicializarlos y escribir en ellos sin PVC.
 
 El contenedor declara `allowPrivilegeEscalation: false`, `seccompProfile.type: RuntimeDefault` y `capabilities.drop: [ALL]`, conforme a Pod Security `restricted:v1.36`; no usa privileged, hostPath ni host networking. El Service `ClusterIP` `rabbitmq` ofrece AMQP en `5672` y Management API en `15672`, ambos solo dentro del clúster; RabbitMQ no tiene PVC ni clustering.
 
-RabbitMQ tiene `startupProbe` de hasta 180 segundos; liveness y readiness quedan habilitadas después de que `rabbitmq-diagnostics -q ping` responde. Se mantienen los recursos actuales (`100m/128Mi` requests, `250m/256Mi` limits): un smoke test local de `rabbitmq:4-management-alpine` bajo límite de `256Mi`, como UID/GID `100:101`, con todas las capabilities descartadas, arrancó correctamente en aproximadamente 47 segundos y las lecturas posteriores al inicio estuvieron entre `104.6Mi` y `108.4Mi`. Esta medida local no sustituye observar memoria y alarmas del broker en el clúster.
+Las probes no ejecutan periódicamente una CLI Erlang:
+
+- `startupProbe`: TCP en AMQP `5672`, cada 5 s, timeout 1 s y hasta 180 s de startup (`failureThreshold: 36`). Un test local con la imagen de auditoría tardó unos 52 s en completar el arranque.
+- `readinessProbe`: abre TCP a `5672` y `15672` con Bash `/dev/tcp`, cada 5 s, timeout 1 s y dos fallos para retirar el Pod. Esto comprueba los dos listeners usados por Polls y el provisioner.
+- `livenessProbe`: TCP en AMQP `5672`, cada 10 s, timeout 1 s y seis fallos consecutivos (aprox. 60 s) antes de reiniciar. La ventana evita reiniciar por una sola demora breve.
+
+En pruebas locales, detener la aplicación RabbitMQ con `rabbitmqctl stop_app` dejaba `rabbitmq-diagnostics -q ping` en éxito, pero cerraba los puertos AMQP/Management: readiness y liveness TCP fallaron como se esperaba. Al desactivar solo Management, readiness falló y liveness AMQP permaneció sana. El coste observado para los comandos de probe, incluyendo overhead de `docker exec`, fue de 92–205 ms.
+
+El ConfigMap `rabbitmq-config` fija `vm_memory_high_watermark.absolute = 160MiB`. Sin configuración, `rabbitmq:4-management-alpine` (RabbitMQ 4.4.0 en esta prueba) eligió el 60% de la RAM del host: `9396MiB`, aunque el límite del contenedor era `256MiB`. RabbitMQ recomienda un watermark absoluto en contenedores porque la detección de cgroups no siempre es correcta. La alarma activa flow control; **no es un límite de RSS ni impide que el proceso consuma más memoria**.
+
+Mediciones bajo `256Mi`, CPU `250m`, UID/GID `100:101`, `drop: ALL`, `no-new-privileges` y seccomp RuntimeDefault local del runtime:
+
+| Carga/medida | RabbitMQ `mem_used` / watermark | Memoria cgroup observada | Alarma/OOM |
+| --- | ---: | ---: | --- |
+| Recién listo | `126.4 MB` / `160Mi` (baseline aprox. `120.5Mi`) | `103–106Mi` | Sin alarma |
+| 10 000 mensajes persistentes de 4 KiB | `140.2 MB` (aprox. `133.7Mi`) | `117.8Mi` | Sin alarma |
+| Backlog sintético de más de 100 000 mensajes no persistentes de 4 KiB | Llegó a `162.7 MB`; el broker bloqueó el publisher por memoria y este agotó su timeout de prueba | Pico muestreado `147.2Mi` durante publicación | Flow control observado; sin OOM |
+| Tras purgar un backlog grande | Spike transitorio de `mem_used=217.1 MB` y alarma activa | `memory.current=171.4 MB` de `268.4 MB`; `docker stats` llegó a `210.1Mi` | Alarma se despejó; sin OOM |
+
+El watermark `160Mi` deja unos `39.5Mi` sobre el baseline interno medido, y `96Mi` aritméticos entre el umbral y el límite cgroup. Durante el spike la métrica interna sobrepasó el watermark, lo que confirma que no es una barrera de memoria. El test mostró que se activa flow control antes del OOM local y que los publishers pueden quedar bloqueados; por eso el timeout del outbox libera el lease y reintenta. El límite Kubernetes permanece en `256Mi`; se debe observar el uso real del clúster bajo carga.
 
 ## Consumidores externos RabbitMQ
 
@@ -106,7 +131,7 @@ Cada Pod de Polls conserva sus workers de cierre, outbox y entregas. La concurre
 
 ## Migraciones
 
-El comando del contenedor es Uvicorn y no ejecuta Alembic. Compose ejecuta un servicio one-shot `migrate`; Kubernetes usa `k8s/jobs/migration.yaml`, con `parallelism: 1` y `completions: 1`. La migración se debe completar antes de aplicar/actualizar el Deployment de Polls; no ejecutes deliberadamente el Job durante un rollout. No se agregó advisory lock porque el flujo mantiene un solo Job activo y no hay migraciones concurrentes por réplica.
+El comando del contenedor es Uvicorn y no ejecuta Alembic. Compose ejecuta un servicio one-shot `migrate`; Kubernetes usa `k8s/jobs/migration.yaml`, con `parallelism: 1`, `completions: 1`, `backoffLimit: 3` y `activeDeadlineSeconds: 300`. La migración se debe completar antes de aplicar/actualizar el Deployment de Polls; no ejecutes deliberadamente el Job durante un rollout. No se agregó advisory lock porque el flujo mantiene un solo Job activo y no hay migraciones concurrentes por réplica.
 
 Para una nueva migración:
 
@@ -172,23 +197,25 @@ Los límites/request por Pod son:
 | RabbitMQ | `100m` / `128Mi` | `250m` / `256Mi` |
 | Un Job (migración o provisioning) | `50m` / `64Mi` | `100m` / `128Mi` |
 
-Cálculo para los recursos configurados:
+Cálculo desde los recursos actuales de los manifests. PostgreSQL cuenta con la request/limit del container regular: su initContainer (`25m/32Mi`, `50m/64Mi`) es menor y no se suma al máximo efectivo del Pod.
 
-| Escenario | Requests CPU / memoria | Limits CPU / memoria |
-| --- | --- | --- |
-| 1 Polls + PostgreSQL + RabbitMQ | `300m` / `512Mi` | `750m` / `1024Mi` |
-| 3 Polls + PostgreSQL + RabbitMQ | `500m` / `768Mi` | `1250m` / `1536Mi` |
-| 3 Polls + PostgreSQL + RabbitMQ + Job | `550m` / `832Mi` | `1350m` / `1664Mi` |
-| HPA scale-down/up overlap (5 Polls objects + PostgreSQL + RabbitMQ) | `700m` / `1024Mi` | `1750m` / `2048Mi` |
-| HPA scale-down/up overlap plus Job | `750m` / `1088Mi` | `1850m` / `2176Mi` |
+| Escenario | Pods | Requests CPU | Requests memoria | Limits CPU | Limits memoria | Contra quota |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Polls=1 + PostgreSQL + RabbitMQ | 3 | `300m` | `512Mi` | `750m` | `1024Mi` | Cabe |
+| Polls=3 + PostgreSQL + RabbitMQ | 5 | `500m` | `768Mi` | `1250m` | `1536Mi` | Cabe |
+| Polls=3 + un Job | 6 | `550m` | `832Mi` | `1350m` | `1664Mi` | Cabe |
+| Polls=3 + ambos Jobs | 7 | `600m` | `896Mi` | `1450m` | `1792Mi` | Cabe |
+| 5 Polls transitorios + PostgreSQL + RabbitMQ | 7 | `700m` | `1024Mi` | `1750m` | `2048Mi` | Exactamente al límite de memoria |
+| 5 Polls transitorios + PostgreSQL + RabbitMQ + un Job | 8 | `750m` | `1088Mi` | `1850m` | `2176Mi` | Rechazable: excede requests/limits de memoria |
+| Peor caso: 5 Polls transitorios + PostgreSQL + RabbitMQ + ambos Jobs | 9 | `800m` | `1152Mi` | `1950m` | `2304Mi` | Rechazable: excede requests/limits de memoria |
 
-Un único Job de migración o provisioning cabe junto a las tres réplicas de Polls. Si se ejecuta un Job de cada tipo simultáneamente con tres Polls, el total sería `600m/896Mi` requests y `1450m/1792Mi` limits; aun cabe en cuota, pero se recomienda ejecutar un Job por vez. El Job activo añade un Pod: hasta seis Pods contando los tres Polls, PostgreSQL, RabbitMQ y el Job.
+Las quotas son `10 Pods`, requests `1 CPU/1Gi` y limits `2 CPU/2Gi`; todos los containers cumplen además el máximo individual del LimitRange (`1 CPU/1Gi`). El caso máximo normal con Polls=3 y ambos Jobs cabe. El peor escenario plausible durante scale-down/up con Pods aún `Terminating` y los dos Jobs excede la quota de memoria, aunque no la cantidad de Pods. Ejecuta un Job por vez; antes de Jobs o rollouts, estabiliza/congela el HPA, espera que los Pods `Terminating` desaparezcan y evita solapar tareas con el scale-up/down.
 
-El Deployment usa estrategia `Recreate`: durante una actualización, Kubernetes termina las réplicas antiguas antes de crear las nuevas. Esto evita que Pods antiguos en `Terminating` se solapen con reemplazos, a cambio de una interrupción breve de la API. El Job se completa antes de iniciar el rollout.
+Polls usa `Recreate`: durante un cambio de imagen, Kubernetes termina las réplicas antiguas antes de crear las nuevas, a cambio de una interrupción breve de la API. RabbitMQ también usa `Recreate`: hay una interrupción AMQP/Management mientras se reemplaza su única réplica; así se evita servir tráfico desde dos brokers sin estado compartido. El outbox reintenta publicaciones y el provisioner debe recrear topología/usuarios después de cada reemplazo. El Job de migración se completa antes de iniciar el rollout de Polls.
 
-Se eligió `Recreate` porque `maxSurge: 0` no da una cota suficiente: con tres réplicas antiguas terminando y tres nuevas activas, requests serían `800m/1152Mi` y limits `2000m/2304Mi` incluso sin Job, excediendo las cuotas de memoria. Con Job simultáneo llegarían a `850m/1216Mi` y `2100m/2432Mi`. El HPA también puede conservar Pods de un scale-down reciente en `Terminating`: un downscale de tres a uno seguido de scale-up puede mantener cinco objetos Polls temporalmente. Sin Job, ese pico queda exactamente en `1Gi` requests y `2Gi` limits de memoria; con Job excedería ambas cuotas. El pico HPA+Job serían ocho Pods en total, dentro del límite de diez, pero no cabría en las cuotas de memoria. Para nuevas migraciones, fija temporalmente `minReplicas` y `maxReplicas` del HPA al número actual de réplicas, espera a que no haya Pods `Terminating`, ejecuta y espera el Job, actualiza Polls con `Recreate` y restaura `minReplicas: 1`/`maxReplicas: 3`. No ejecutes deliberadamente migraciones durante un rollout ni durante una prueba de carga/scale.
+`Recreate` de Polls evita solapar revisiones distintas, pero el HPA aún puede mantener Pods de un scale-down en `Terminating` mientras crea réplicas nuevas. El caso de cinco objetos Polls deja exactamente `1Gi` requests y `2Gi` limits de memoria antes de añadir cualquier Job. Para una operación segura, fija temporalmente `minReplicas` y `maxReplicas` del HPA al número de réplicas deseado, espera a que no haya Pods `Terminating`, ejecuta un solo Job, espera a que su Pod termine y luego restaura `minReplicas: 1`/`maxReplicas: 3`. No ejecutes deliberadamente Jobs durante un rollout ni durante una prueba de carga/scale.
 
-El PVC consume exactamente `1Gi`; no se crean otros PVC. Los manifests declaran dos Deployments, un StatefulSet, un HPA, tres Services, dos ConfigMaps, dos Jobs y un PVC. Se ejecuta un Job por vez; sus Pods temporales y los escenarios HPA están contemplados en los cálculos anteriores, y todos cumplen las cuotas informadas.
+El PVC consume exactamente `1Gi`; no se crean otros PVC. Los manifests declaran dos Deployments, un StatefulSet, un HPA, tres Services, tres ConfigMaps, dos Jobs y un PVC. Los casos que exceden quota en la tabla son posibles durante churn del HPA si coinciden Jobs; evita esa superposición siguiendo el procedimiento anterior.
 
 El HPA usa `autoscaling/v2`, CPU promedio al `70%`, `minReplicas: 1` y `maxReplicas: 3`. Metrics Server está disponible en el clúster. Las cuotas informadas permiten estos valores; si cambian, requests/limits y máximo de réplicas están declarados en los manifests para ajustarse de forma explícita.
 
@@ -196,11 +223,11 @@ El HPA usa `autoscaling/v2`, CPU promedio al `70%`, `minReplicas: 1` y `maxRepli
 
 - `.github/workflows/ci.yml` ejecuta pytest en pushes a `main` y pull requests.
 - `.github/workflows/publish-image.yml` prueba antes de construir/publicar en pushes a `main` y en **pushes** de tags `vMAJOR.MINOR.PATCH`. Para tags valida que coincidan con `app/version.py`.
-- Las imágenes de release reciben `v1.3.2`, `1.3.2` y `latest`; los pushes a `main` reciben tags `main` y `sha-<commit>`.
+- Las imágenes de release reciben `v1.3.3`, `1.3.3` y `latest`; los pushes a `main` reciben tags `main` y `sha-<commit>`.
 - Registry: `ghcr.io/tomascano-usm/inf326-microservicio-polls`.
 - Publica con `GITHUB_TOKEN` y permisos `contents: read`, `packages: write`. El workflow de release SemVer existente se conserva.
 
-El tag concreto de imagen de los manifests preparado para la próxima release es `1.3.2`; GHCR lo publicará al hacer push del tag SemVer `v1.3.2`. Hasta publicar esa release, la imagen `1.3.2` no está disponible en GHCR. Ejecutar manualmente `Publish GitHub Release` solo crea la GitHub Release y no dispara la publicación de imagen. Antes de desplegar se debe confirmar que la imagen está publicada. Para una release posterior, actualiza los manifests a su versión publicada. El paquete GHCR puede requerir hacerse público o configurar `imagePullSecret`. No hay CD, Argo CD ni GitOps.
+El tag concreto de imagen de los manifests preparado para la próxima release es `1.3.3`; GHCR lo publicará al hacer push del tag SemVer `v1.3.3`. Hasta publicar esa release, la imagen `1.3.3` no está disponible en GHCR. Ejecutar manualmente `Publish GitHub Release` solo crea la GitHub Release y no dispara la publicación de imagen. Antes de desplegar se debe confirmar que la imagen está publicada. Para una release posterior, actualiza los manifests a su versión publicada. El paquete GHCR puede requerir hacerse público o configurar `imagePullSecret`. No hay CD, Argo CD ni GitOps.
 
 ## Procedimiento de despliegue futuro
 
@@ -213,10 +240,14 @@ kubectl -n "$NAMESPACE" apply -f k8s/postgres/service.yaml
 kubectl -n "$NAMESPACE" apply -f k8s/postgres/pvc.yaml
 kubectl -n "$NAMESPACE" apply -f k8s/postgres/statefulset.yaml
 kubectl -n "$NAMESPACE" apply -f k8s/rabbitmq/service.yaml
+kubectl -n "$NAMESPACE" apply -f k8s/rabbitmq/configmap.yaml
 kubectl -n "$NAMESPACE" apply -f k8s/rabbitmq/deployment.yaml
 kubectl -n "$NAMESPACE" wait --for=condition=Ready pod -l app=postgres --timeout=180s
 kubectl -n "$NAMESPACE" rollout status statefulset/postgres --timeout=180s
 kubectl -n "$NAMESPACE" rollout status deployment/rabbitmq --timeout=180s
+
+kubectl -n "$NAMESPACE" apply -f k8s/jobs/migration.yaml
+kubectl -n "$NAMESPACE" wait --for=condition=complete job/polls-migration --timeout=360s
 
 # Opcional: antes de ejecutar, configura los grupos y crea el Secret externo
 # polls-rabbitmq-consumer-credentials con las passwords correspondientes.
@@ -224,9 +255,6 @@ kubectl -n "$NAMESPACE" apply -f k8s/rabbitmq/consumers-configmap.yaml
 kubectl -n "$NAMESPACE" apply -f k8s/jobs/rabbitmq-consumer-provisioner.yaml
 kubectl -n "$NAMESPACE" wait --for=condition=complete \
   job/rabbitmq-consumer-provisioner --timeout=300s
-
-kubectl -n "$NAMESPACE" apply -f k8s/jobs/migration.yaml
-kubectl -n "$NAMESPACE" wait --for=condition=complete job/polls-migration --timeout=180s
 
 kubectl -n "$NAMESPACE" apply -f k8s/polls/configmap.yaml
 kubectl -n "$NAMESPACE" apply -f k8s/polls/service.yaml

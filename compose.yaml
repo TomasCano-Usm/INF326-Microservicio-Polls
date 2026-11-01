@@ -51,11 +51,13 @@ services:
       - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      test:
+        - CMD-SHELL
+        - "bash -ec '</dev/tcp/127.0.0.1/5672 && </dev/tcp/127.0.0.1/15672'"
       interval: 10s
-      timeout: 5s
+      timeout: 2s
       retries: 5
-      start_period: 10s
+      start_period: 60s
 
   postgres:
     image: postgres:16-alpine

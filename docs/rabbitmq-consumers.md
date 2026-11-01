@@ -105,13 +105,15 @@ El Job puede ejecutarse repetidamente con la misma configuración y passwords: `
 3. Elimina el Job completado `rabbitmq-consumer-provisioner`, aplícalo de nuevo y espera su condición `complete`.
 4. Entrega al grupo solo sus credenciales y datos de conexión.
 
+Polls publica con `mandatory` y publisher confirms configurados para que un `Basic.Return` por falta de bindings no marque el evento como publicado. El outbox registra el fallo, libera el lease y reintenta con backoff hasta que exista una queue enlazada. Si `CONSUMERS_JSON` está vacío, los eventos se acumulan como pendientes en PostgreSQL; aprovisiona al menos un consumer para que puedan enrutarse, o vigila el crecimiento si no habrá consumidores.
+
 Para quitar un grupo, añade su slug a `remove_groups` y vuelve a ejecutar el Job. Primero hay que parar sus consumidores y drenar su queue. El proceso elimina únicamente recursos del prefijo reservado `polls.consumer.` y usuarios `polls-<grupo>`.
 
-RabbitMQ no tiene PVC. Al recrear el broker desaparecen usuarios, queues, bindings y mensajes encolados. Los valores de credenciales sobreviven en los Secrets externos: una vez que RabbitMQ esté Ready, vuelve a ejecutar el Job con el mismo ConfigMap y Secret, y los usuarios se reconstruirán con **las mismas passwords**. Los clientes podrán reconectarse sin recibir credenciales nuevas. El Job debe repetirse tras cada recreación del broker.
+RabbitMQ no tiene PVC. Al recrear el broker desaparecen usuarios, queues, bindings y mensajes encolados. Los valores de credenciales sobreviven en los Secrets externos: una vez que RabbitMQ esté Ready, vuelve a ejecutar el Job con el mismo ConfigMap y Secret, y los usuarios se reconstruirán con **las mismas passwords**. Los clientes podrán reconectarse sin recibir credenciales nuevas. El Job debe repetirse tras cada recreación del broker. Hasta que exista al menos una binding por routing key, Polls conserva los eventos pendientes y los reintenta; con el ConfigMap vacío, el outbox crecerá hasta configurar un consumer.
 
 ## Entrega, duplicados y reinicios
 
-El transactional outbox conserva publicación *at-least-once*, no exactly-once. Una caída después de publisher confirm y antes de guardar `published_at` puede duplicar un evento; el `event_id` permanece estable. Los consumidores deben guardar/deduplicar esos IDs antes de confirmar el mensaje.
+El transactional outbox conserva publicación *at-least-once*, no exactly-once. RabbitMQ confirma un evento solo después de que el publisher confirm se completa sin un `Basic.Return` por falta de rutas. Una caída después de publisher confirm y antes de guardar `published_at` puede duplicar un evento; el `event_id` permanece estable. Los consumidores deben guardar/deduplicar esos IDs antes de confirmar el mensaje.
 
 Aunque exchanges, queues y mensajes se declaren durable/persistent, RabbitMQ corre sin PVC por la cuota del namespace. Una recreación del broker puede perder mensajes ya confirmados; el outbox no vuelve a publicar los que Polls marcó como publicados. El provisioning recupera la topología y usuarios, no los mensajes perdidos.
 

@@ -56,7 +56,10 @@ class RabbitMQEventPublisher:
 
             connection = await aio_pika.connect_robust(self.url, timeout=10)
             try:
-                channel = await connection.channel(publisher_confirms=True)
+                channel = await connection.channel(
+                    publisher_confirms=True,
+                    on_return_raises=True,
+                )
                 exchange = await channel.declare_exchange(
                     self.exchange_name,
                     type=ExchangeType.TOPIC,
@@ -95,7 +98,7 @@ class RabbitMQEventPublisher:
             timestamp=occurred_at,
             type=event_type,
         )
-        await exchange.publish(message, routing_key=event_type)
+        await exchange.publish(message, routing_key=event_type, mandatory=True)
 
     async def close(self) -> None:
         async with self._connection_lock:
