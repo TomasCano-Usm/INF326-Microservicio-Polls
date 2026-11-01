@@ -8,6 +8,7 @@ WORKDIR /app
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+RUN python -c "import psycopg; import sqlalchemy.dialects.postgresql.psycopg"
 
 RUN groupadd --gid 10001 polls \
     && useradd --uid 10001 --gid polls --create-home --home-dir /home/polls \
