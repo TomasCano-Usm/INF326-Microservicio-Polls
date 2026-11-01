@@ -35,6 +35,14 @@ Messages tampoco ofrece idempotencia en su contrato HTTP. Un POST aceptado remot
 
 PostgreSQL corre como un StatefulSet de una réplica con el único PVC del namespace: `postgres-data`, `ReadWriteOnce`, `1Gi`. Se omite `storageClassName` para utilizar la clase por defecto `do-block-storage`. El Service interno `postgres` proporciona el DNS que utilizan Polls y el Job de migración.
 
+PostgreSQL usa el UID/GID `70`, correspondiente al usuario `postgres` de `postgres:16-alpine`, y ejecuta como no-root con seccomp `RuntimeDefault`; el Pod y sus containers también mantienen `allowPrivilegeEscalation: false` y `capabilities.drop: [ALL]`. La imagen oficial deja su entrypoint como root por defecto para que pueda preparar directorios y hacer `chown` antes de bajar privilegios. En este Pod, el UID root combinado con `drop: [ALL]` deja sin `CAP_CHOWN` y `CAP_FOWNER`: el entrypoint no puede cambiar el dueño de `PGDATA` ni el modo de `/var/run/postgresql` cuando no es su dueño. `fsGroup: 70` por sí solo agrega el grupo suplementario y prepara permisos de grupo en el volumen, pero no cambia el UID del proceso.
+
+El initContainer `prepare-pgdata` corre también como UID/GID `70`, sin capabilities añadidas, y usa el mismo PVC. Si encuentra un `PG_VERSION` válido, verifica que el directorio pertenezca al UID de `postgres` y lo deja intacto. Si no hay `PG_VERSION`, solo elimina con `rmdir` el directorio de `PGDATA` si está vacío —el placeholder vacío que pudo dejar un inicio fallido como root— y lo recrea como UID `70`; ante contenido no inicializado no vacío, falla sin borrar datos. No ejecuta `chown` ni necesita privilegios. Sus requests `25m/32Mi` y limits `50m/64Mi` son menores que los del container PostgreSQL, por lo que no aumentan los recursos efectivos del Pod.
+
+El volumen `do-block-storage` es RWO y usa ext4 por defecto. El CSIDriver de DigitalOcean deja `fsGroupPolicy` sin especificar, cuyo valor predeterminado Kubernetes es `ReadWriteOnceWithFSType`; por tanto, kubelet aplica `fsGroup: 70` al volumen para este modo de acceso y filesystem. Esto hace escribible por el grupo `70` el directorio raíz del volumen, permitiendo al initContainer retirar únicamente el directorio vacío y crear el nuevo directorio propietario correcto. `fsGroupChangePolicy: OnRootMismatch` evita recorridos recursivos innecesarios en cada reinicio. Se conserva el claim `postgres-data`, su ruta de montaje y `PGDATA=/var/lib/postgresql/data/pgdata`; no se reemplaza ni se borra el PVC.
+
+Los probes `startupProbe`, `livenessProbe` y `readinessProbe` siguen ejecutando `pg_isready -U polls -d polls` dentro del container PostgreSQL. El socket Unix permanece en `/var/run/postgresql`, propiedad del UID `70`, por lo que el probe conserva su comportamiento.
+
 RabbitMQ corre como un Deployment de una réplica con `rabbitmq:4-management-alpine`. El Service `ClusterIP` `rabbitmq` ofrece AMQP en `5672` y Management API en `15672`, ambos solo dentro del clúster; no hay Ingress, NodePort ni LoadBalancer. RabbitMQ no tiene PVC ni clustering.
 
 RabbitMQ tiene `startupProbe` de hasta 180 segundos; liveness y readiness quedan habilitadas después de que `rabbitmq-diagnostics ping` responde. Se mantienen los recursos actuales (`100m/128Mi` requests, `250m/256Mi` limits); revisa memoria y alarmas del broker durante el smoke test.
@@ -186,11 +194,11 @@ El HPA usa `autoscaling/v2`, CPU promedio al `70%`, `minReplicas: 1` y `maxRepli
 
 - `.github/workflows/ci.yml` ejecuta pytest en pushes a `main` y pull requests.
 - `.github/workflows/publish-image.yml` prueba antes de construir/publicar en pushes a `main` y en **pushes** de tags `vMAJOR.MINOR.PATCH`. Para tags valida que coincidan con `app/version.py`.
-- Las imágenes de release reciben `v1.3.0`, `1.3.0` y `latest`; los pushes a `main` reciben tags `main` y `sha-<commit>`.
+- Las imágenes de release reciben `v1.3.1`, `1.3.1` y `latest`; los pushes a `main` reciben tags `main` y `sha-<commit>`.
 - Registry: `ghcr.io/tomascano-usm/inf326-microservicio-polls`.
 - Publica con `GITHUB_TOKEN` y permisos `contents: read`, `packages: write`. El workflow de release SemVer existente se conserva.
 
-El tag concreto de imagen de los manifests es `1.3.0`; GHCR lo publicará al hacer push del tag SemVer `v1.3.0`. Ejecutar manualmente `Publish GitHub Release` solo crea la GitHub Release y no dispara la publicación de imagen. Antes de desplegar se debe confirmar que la imagen está publicada. Para una release posterior, actualiza los manifests a su versión publicada. El paquete GHCR puede requerir hacerse público o configurar `imagePullSecret`. No hay CD, Argo CD ni GitOps.
+El tag concreto de imagen de los manifests preparado para la próxima release es `1.3.1`; GHCR lo publicará al hacer push del tag SemVer `v1.3.1`. Ejecutar manualmente `Publish GitHub Release` solo crea la GitHub Release y no dispara la publicación de imagen. Antes de desplegar se debe confirmar que la imagen está publicada. Para una release posterior, actualiza los manifests a su versión publicada. El paquete GHCR puede requerir hacerse público o configurar `imagePullSecret`. No hay CD, Argo CD ni GitOps.
 
 ## Procedimiento de despliegue futuro
 

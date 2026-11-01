@@ -1,3 +1,3 @@
 """Semantic version for the Polls service and its OpenAPI document."""
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
