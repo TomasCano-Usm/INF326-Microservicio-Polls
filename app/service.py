@@ -488,7 +488,7 @@ class PollService:
         try:
             await self._messages_client.post_message(
                 channel_id=attempt.channel_id,
-                user_id=attempt.author_id,
+                author_id=attempt.author_id,
                 content=attempt.content,
             )
         except MessagesRejected as error:

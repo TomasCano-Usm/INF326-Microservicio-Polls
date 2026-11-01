@@ -29,7 +29,7 @@ class ChannelMessagesClient(Protocol):
 
     async def connect(self) -> None: ...
 
-    async def post_message(self, channel_id: str, user_id: str, content: str) -> None: ...
+    async def post_message(self, channel_id: str, author_id: str, content: str) -> None: ...
 
     async def close(self) -> None: ...
 
@@ -59,13 +59,13 @@ class HttpMessagesClient:
     async def connect(self) -> None:
         self._client = httpx.AsyncClient(timeout=self.timeout_seconds, transport=self._transport)
 
-    async def post_message(self, channel_id: str, user_id: str, content: str) -> None:
+    async def post_message(self, channel_id: str, author_id: str, content: str) -> None:
         if self._client is None:
             raise RuntimeError("El cliente de Messages no está conectado.")
 
         encoded_channel_id = quote(channel_id, safe="")
         url = f"{self.base_url}/api/v1/channels/{encoded_channel_id}/messages"
-        body = {"user_id": user_id, "content": content}
+        body = {"author_id": author_id, "content": content}
 
         try:
             response = await self._client.post(url, json=body)
@@ -104,7 +104,7 @@ class DisabledMessagesClient:
     async def connect(self) -> None:
         return None
 
-    async def post_message(self, channel_id: str, user_id: str, content: str) -> None:
+    async def post_message(self, channel_id: str, author_id: str, content: str) -> None:
         logger.info("Se omitió una publicación a Messages porque MESSAGES_ENABLED=false.")
 
     async def close(self) -> None:

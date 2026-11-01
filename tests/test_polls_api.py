@@ -48,11 +48,11 @@ class FakeMessagesClient:
     async def connect(self) -> None:
         return None
 
-    async def post_message(self, channel_id: str, user_id: str, content: str) -> None:
+    async def post_message(self, channel_id: str, author_id: str, content: str) -> None:
         if self.failure is not None:
             raise self.failure
         self.requests.append(
-            {"channel_id": channel_id, "user_id": user_id, "content": content}
+            {"channel_id": channel_id, "author_id": author_id, "content": content}
         )
 
     async def close(self) -> None:
@@ -117,8 +117,8 @@ def test_create_persists_poll_and_emits_created_event_after_announcement(api) ->
     assert len(messages.requests) == 1
     announcement = messages.requests[0]
     assert announcement["channel_id"] == "channel-123"
-    assert announcement["user_id"] == "user-author"
-    assert set(announcement) == {"channel_id", "user_id", "content"}
+    assert announcement["author_id"] == "user-author"
+    assert set(announcement) == {"channel_id", "author_id", "content"}
     assert created["question"] in announcement["content"]
     assert created["poll_id"] in announcement["content"]
     assert all(option["text"] in announcement["content"] for option in created["options"])
@@ -207,7 +207,8 @@ def test_only_author_can_close_and_close_is_idempotent(api) -> None:
     assert len(messages.requests) == 2
     closure = messages.requests[-1]
     assert closure["channel_id"] == "channel-123"
-    assert closure["user_id"] == "user-author"
+    assert closure["author_id"] == "user-author"
+    assert set(closure) == {"channel_id", "author_id", "content"}
     assert poll["question"] in closure["content"]
     assert "Total de votos: 0" in closure["content"]
     assert all(option["text"] in closure["content"] for option in poll["options"])
@@ -230,6 +231,11 @@ def test_deadline_closes_poll_automatically_and_publishes_results(api) -> None:
 
     assert result["status"] == "closed"
     assert len(messages.requests) == 2
+    assert all(message["author_id"] == "user-author" for message in messages.requests)
+    assert all(
+        set(message) == {"channel_id", "author_id", "content"}
+        for message in messages.requests
+    )
 
 
 def test_messages_temporary_failure_returns_202_and_retries(api) -> None:

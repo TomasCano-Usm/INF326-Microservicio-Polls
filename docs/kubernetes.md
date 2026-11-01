@@ -223,11 +223,11 @@ El HPA usa `autoscaling/v2`, CPU promedio al `70%`, `minReplicas: 1` y `maxRepli
 
 - `.github/workflows/ci.yml` ejecuta pytest en pushes a `main` y pull requests.
 - `.github/workflows/publish-image.yml` prueba antes de construir/publicar en pushes a `main` y en **pushes** de tags `vMAJOR.MINOR.PATCH`. Para tags valida que coincidan con `app/version.py`.
-- Las imágenes de release reciben `v1.3.4`, `1.3.4` y `latest`; los pushes a `main` reciben tags `main` y `sha-<commit>`.
+- Las imágenes de release reciben `v1.3.5`, `1.3.5` y `latest`; los pushes a `main` reciben tags `main` y `sha-<commit>`.
 - Registry: `ghcr.io/tomascano-usm/inf326-microservicio-polls`.
 - Publica con `GITHUB_TOKEN` y permisos `contents: read`, `packages: write`. El workflow de release SemVer existente se conserva.
 
-El tag concreto de imagen de los manifests preparado para la próxima release es `1.3.4`; GHCR lo publicará al hacer push del tag SemVer `v1.3.4`. Hasta publicar esa release, la imagen `1.3.4` no está disponible en GHCR. Ejecutar manualmente `Publish GitHub Release` solo crea la GitHub Release y no dispara la publicación de imagen. Antes de desplegar se debe confirmar que la imagen está publicada. Para una release posterior, actualiza los manifests a su versión publicada. El paquete GHCR puede requerir hacerse público o configurar `imagePullSecret`. No hay CD, Argo CD ni GitOps.
+El tag concreto de imagen de los manifests preparado para la próxima release es `1.3.5`; GHCR lo publicará al hacer push del tag SemVer `v1.3.5`. Hasta publicar esa release, la imagen `1.3.5` no está disponible en GHCR. Ejecutar manualmente `Publish GitHub Release` solo crea la GitHub Release y no dispara la publicación de imagen. Antes de desplegar se debe confirmar que la imagen está publicada. Para una release posterior, actualiza los manifests a su versión publicada. El paquete GHCR puede requerir hacerse público o configurar `imagePullSecret`. No hay CD, Argo CD ni GitOps.
 
 ## Procedimiento de despliegue futuro
 

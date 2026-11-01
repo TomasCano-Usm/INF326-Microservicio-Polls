@@ -49,8 +49,8 @@ class FakeMessagesClient:
     async def connect(self) -> None:
         return None
 
-    async def post_message(self, channel_id: str, user_id: str, content: str) -> None:
-        self.requests.append((channel_id, user_id, content))
+    async def post_message(self, channel_id: str, author_id: str, content: str) -> None:
+        self.requests.append((channel_id, author_id, content))
 
     async def close(self) -> None:
         return None
