@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing SemVer tag to publish (for example v1.3.0)
+        description: Existing SemVer tag to publish (for example v1.3.2)
         required: true
         type: string
 

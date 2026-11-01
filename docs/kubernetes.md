@@ -43,9 +43,11 @@ El volumen `do-block-storage` es RWO y usa ext4 por defecto. El CSIDriver de Dig
 
 Los probes `startupProbe`, `livenessProbe` y `readinessProbe` siguen ejecutando `pg_isready -U polls -d polls` dentro del container PostgreSQL. El socket Unix permanece en `/var/run/postgresql`, propiedad del UID `70`, por lo que el probe conserva su comportamiento.
 
-RabbitMQ corre como un Deployment de una réplica con `rabbitmq:4-management-alpine`. El Service `ClusterIP` `rabbitmq` ofrece AMQP en `5672` y Management API en `15672`, ambos solo dentro del clúster; no hay Ingress, NodePort ni LoadBalancer. RabbitMQ no tiene PVC ni clustering.
+RabbitMQ corre como un Deployment de una réplica con `rabbitmq:4-management-alpine`. La imagen oficial crea al usuario `rabbitmq` con UID `100` y GID `101` (`adduser -u 100`, `addgroup -g 101` en su [Dockerfile Alpine](https://github.com/docker-library/rabbitmq/blob/master/Dockerfile-alpine.template)); la imagen descargada confirma esos IDs y no declara un `USER` predeterminado. Se fijan explícitamente en el `securityContext` junto con `runAsNonRoot: true`. Sin esta configuración, el proceso empieza como root y el [entrypoint oficial](https://github.com/docker-library/rabbitmq/blob/master/docker-entrypoint.sh) intenta ajustar propietarios bajo `/var/lib/rabbitmq` y cambiar a `rabbitmq` mediante `su-exec`. Esa transición llama `setgroups()` y falla con `capabilities.drop: [ALL]` (`Operation not permitted`) porque no dispone de `CAP_SETGID`. Al arrancar directamente como UID/GID `100:101`, se omite la transición root→rabbitmq y no se requieren capabilities. La imagen prepara `/var/lib/rabbitmq`, `/etc/rabbitmq` y `/var/log/rabbitmq` para que el usuario de servicio pueda inicializarlos y escribir en ellos sin PVC.
 
-RabbitMQ tiene `startupProbe` de hasta 180 segundos; liveness y readiness quedan habilitadas después de que `rabbitmq-diagnostics ping` responde. Se mantienen los recursos actuales (`100m/128Mi` requests, `250m/256Mi` limits); revisa memoria y alarmas del broker durante el smoke test.
+El contenedor declara `allowPrivilegeEscalation: false`, `seccompProfile.type: RuntimeDefault` y `capabilities.drop: [ALL]`, conforme a Pod Security `restricted:v1.36`; no usa privileged, hostPath ni host networking. El Service `ClusterIP` `rabbitmq` ofrece AMQP en `5672` y Management API en `15672`, ambos solo dentro del clúster; RabbitMQ no tiene PVC ni clustering.
+
+RabbitMQ tiene `startupProbe` de hasta 180 segundos; liveness y readiness quedan habilitadas después de que `rabbitmq-diagnostics -q ping` responde. Se mantienen los recursos actuales (`100m/128Mi` requests, `250m/256Mi` limits): un smoke test local de `rabbitmq:4-management-alpine` bajo límite de `256Mi`, como UID/GID `100:101`, con todas las capabilities descartadas, arrancó correctamente en aproximadamente 47 segundos y las lecturas posteriores al inicio estuvieron entre `104.6Mi` y `108.4Mi`. Esta medida local no sustituye observar memoria y alarmas del broker en el clúster.
 
 ## Consumidores externos RabbitMQ
 
@@ -194,11 +196,11 @@ El HPA usa `autoscaling/v2`, CPU promedio al `70%`, `minReplicas: 1` y `maxRepli
 
 - `.github/workflows/ci.yml` ejecuta pytest en pushes a `main` y pull requests.
 - `.github/workflows/publish-image.yml` prueba antes de construir/publicar en pushes a `main` y en **pushes** de tags `vMAJOR.MINOR.PATCH`. Para tags valida que coincidan con `app/version.py`.
-- Las imágenes de release reciben `v1.3.1`, `1.3.1` y `latest`; los pushes a `main` reciben tags `main` y `sha-<commit>`.
+- Las imágenes de release reciben `v1.3.2`, `1.3.2` y `latest`; los pushes a `main` reciben tags `main` y `sha-<commit>`.
 - Registry: `ghcr.io/tomascano-usm/inf326-microservicio-polls`.
 - Publica con `GITHUB_TOKEN` y permisos `contents: read`, `packages: write`. El workflow de release SemVer existente se conserva.
 
-El tag concreto de imagen de los manifests preparado para la próxima release es `1.3.1`; GHCR lo publicará al hacer push del tag SemVer `v1.3.1`. Ejecutar manualmente `Publish GitHub Release` solo crea la GitHub Release y no dispara la publicación de imagen. Antes de desplegar se debe confirmar que la imagen está publicada. Para una release posterior, actualiza los manifests a su versión publicada. El paquete GHCR puede requerir hacerse público o configurar `imagePullSecret`. No hay CD, Argo CD ni GitOps.
+El tag concreto de imagen de los manifests preparado para la próxima release es `1.3.2`; GHCR lo publicará al hacer push del tag SemVer `v1.3.2`. Hasta publicar esa release, la imagen `1.3.2` no está disponible en GHCR. Ejecutar manualmente `Publish GitHub Release` solo crea la GitHub Release y no dispara la publicación de imagen. Antes de desplegar se debe confirmar que la imagen está publicada. Para una release posterior, actualiza los manifests a su versión publicada. El paquete GHCR puede requerir hacerse público o configurar `imagePullSecret`. No hay CD, Argo CD ni GitOps.
 
 ## Procedimiento de despliegue futuro
 
