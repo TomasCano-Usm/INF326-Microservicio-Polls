@@ -1,7 +1,7 @@
 # INF326-Microservicio-Polls
 Repositorio público para la implementación de un microservicio de encuestas en el contexto de la asignatura inf326, UTFSM
 
-> **Versión del código: `1.2.0`** · Próximo tag SemVer: **`v1.2.0`** · API REST: **`/api/v1`**
+> **Versión del código: `1.3.0`** · Próximo tag SemVer: **`v1.3.0`** · API REST: **`/api/v1`**
 
 La versión del servicio también aparece en la metadata OpenAPI de FastAPI (`/openapi.json` y `/docs`). Su fuente única está en `app/version.py`.
 
@@ -90,9 +90,11 @@ Polls declara el exchange durable tipo `topic` **`polls.events`** y publica con 
 | `poll.vote.cast` | Voto aceptado | `poll_id`, `channel_id`, `voter_id`, `option_id`, `cast_at`. |
 | `poll.closed` | Cierre manual o por vencimiento | Encuesta con resultados finales y `reason` (`manual` o `deadline`). |
 
-Todos usan el envelope `{ "event_id", "event_type", "occurred_at", "payload" }`. El `event_id` queda estable durante los reintentos; los consumidores deben enlazar sus colas durables al exchange y deduplicar por dicho ID.
+Todos usan el envelope `{ "event_id", "event_type", "occurred_at", "payload" }`. El `event_id` queda estable durante los reintentos; cada integración consume la queue durable que le provisiona la infraestructura y debe deduplicar por dicho ID.
 
 Un worker revisa vencimientos y outbox. El intervalo se configura con `POLL_CLOSE_SCAN_INTERVAL_SECONDS`; el backoff inicial de reintentos con `POLL_RETRY_BASE_SECONDS`.
+
+Los eventos pueden consumirse opcionalmente mediante RabbitMQ con una queue y un usuario independientes por integración. El provisioning, los permisos mínimos y el procedimiento después de reiniciar el broker están en [`docs/rabbitmq-consumers.md`](docs/rabbitmq-consumers.md).
 
 ## Integración REST con Messages
 
@@ -131,11 +133,11 @@ Polls usa versionado semántico **`MAJOR.MINOR.PATCH`**:
 - **MINOR:** funcionalidad nueva compatible. Mantiene el prefijo REST existente.
 - **PATCH:** correcciones compatibles sin cambios de contrato.
 
-Para cada release, actualiza `__version__` en `app/version.py` y la versión indicada al inicio de este README. FastAPI toma automáticamente ese valor para OpenAPI. Los tags publicados usan el prefijo `v` seguido de la versión, por ejemplo `v1.2.0`:
+Para cada release, actualiza `__version__` en `app/version.py` y la versión indicada al inicio de este README. FastAPI toma automáticamente ese valor para OpenAPI. Los tags publicados usan el prefijo `v` seguido de la versión, por ejemplo `v1.3.0`:
 
 ```bash
-git tag -a v1.2.0 -m "Release v1.2.0"
-git push origin v1.2.0
+git tag -a v1.3.0 -m "Release v1.3.0"
+git push origin v1.3.0
 ```
 
 Publica primero el commit de la versión en `main`. Al hacer push del tag, el workflow `.github/workflows/release.yml` valida que coincida exactamente con `app/version.py` y crea un GitHub Release con el mismo nombre y notas autogeneradas. El workflow `.github/workflows/publish-image.yml` prueba y publica la imagen a GHCR con tags `vMAJOR.MINOR.PATCH` y `MAJOR.MINOR.PATCH`; `latest` sigue la release. Ejecutar manualmente `Publish GitHub Release` solo crea la GitHub Release y no publica la imagen. La imagen se publica mediante el push del tag. Usa `GITHUB_TOKEN` con permisos mínimos. Si ya existe el release, el workflow no crea un duplicado. El contrato `/api/v1` solo cambia al iniciar una nueva versión mayor de la API.
@@ -143,7 +145,7 @@ Publica primero el commit de la versión en `main`. Al hacer push del tag, el wo
 Para crear manualmente solo la GitHub Release de un tag existente, se puede ejecutar `Publish GitHub Release` desde Actions indicando el tag. Esto no publica la imagen en GHCR. Por ejemplo:
 
 ```bash
-gh workflow run release.yml --ref main -f tag=v1.2.0
+gh workflow run release.yml --ref main -f tag=v1.3.0
 ```
 
 ## Pruebas

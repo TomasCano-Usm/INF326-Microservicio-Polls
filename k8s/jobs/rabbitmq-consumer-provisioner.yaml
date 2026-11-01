@@ -1,0 +1,46 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rabbitmq-consumer-provisioner
+spec:
+  completions: 1
+  parallelism: 1
+  backoffLimit: 3
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app: rabbitmq-consumer-provisioner
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: provisioner
+          image: ghcr.io/tomascano-usm/inf326-microservicio-polls:1.3.0
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "app.rabbitmq_consumer_provisioner"]
+          envFrom:
+            - configMapRef:
+                name: rabbitmq-consumers
+            - secretRef:
+                name: polls-rabbitmq-consumer-credentials
+                optional: true
+          env:
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: polls-credentials
+                  key: RABBITMQ_URL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
