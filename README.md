@@ -76,6 +76,10 @@ La referencia de parámetros, cuerpos y ejemplos está en [`docs/api.md`](docs/a
 
 Los diagramas de arquitectura y flujo del servicio están descritos en [`docs/diagramas.md`](docs/diagramas.md).
 
+## Gateway GraphQL para la interfaz
+
+El gateway backend para la futura interfaz está en [`gateway/`](gateway/) y su configuración, consultas, mutaciones, pruebas con mocks y guía de despliegue están en [`docs/gateway.md`](docs/gateway.md). Se ejecuta como componente independiente y no cambia los endpoints REST de Polls.
+
 ## Kubernetes (Unidad 05)
 
 Los manifests, límites de recursos, migración mediante Job, integración con Messages del core y comandos futuros de despliegue están documentados en [`docs/kubernetes.md`](docs/kubernetes.md). Polls se configura con `MESSAGES_ENABLED=true` y usa `http://messages.servicios-base.svc.cluster.local:8000`; no se despliegan Users, Channels ni Messages. Kubernetes utiliza PostgreSQL persistente (un PVC de 1 GiB), RabbitMQ efímero, readiness/liveness y HPA de 1 a 3 Pods. No hay CD al clúster.
