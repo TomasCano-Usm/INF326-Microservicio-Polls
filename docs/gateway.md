@@ -146,7 +146,36 @@ El Dockerfile independiente se construye desde la raíz del repositorio:
 docker build -f Dockerfile.gateway -t polls-graphql-gateway:local .
 ```
 
-El contenedor escucha en `5000`; al ejecutarlo, inyecta las variables de upstream apropiadas para su red. No se agrega aún un manifiesto Kubernetes: el acceso externo para el navegador, Service/Ingress, permisos del clúster y referencia a una imagen publicada se deben definir al preparar el despliegue.
+El contenedor escucha en `5000`. El workflow `.github/workflows/publish-gateway-image.yml` ejecuta las pruebas del gateway en PR y, al recibir cambios relevantes en `main`, publica `ghcr.io/tomascano-usm/inf326-polls-gateway` con las etiquetas `main` y `sha-<commit>`. Este workflow solo publica la imagen; **no despliega ni modifica Polls**.
+
+## Despliegue manual en Kubernetes
+
+Los manifiestos independientes están en `k8s/gateway/` y usan el namespace existente `grupo-encuestas`:
+
+- `configmap.yaml`: direcciones internas de los seis servicios, timeout y CORS vacío por defecto.
+- `deployment.yaml`: Deployment `polls-gateway`, imagen `:main`, puerto `5000` y probes de salud. El ConfigMap se inyecta como variables de entorno; no se editan las URLs en Python.
+- `service.yaml`: Service interno `polls-gateway:5000` de tipo `ClusterIP`.
+
+Cuando el workflow haya terminado correctamente y la imagen esté disponible, aplica los manifiestos desde la raíz del repositorio (reemplaza la ruta por la de tu kubeconfig; no la guardes en el repo):
+
+```powershell
+kubectl --kubeconfig "RUTA_A_TU_KUBECONFIG" -n grupo-encuestas apply -f k8s/gateway/
+kubectl --kubeconfig "RUTA_A_TU_KUBECONFIG" -n grupo-encuestas rollout status deployment/polls-gateway
+```
+
+Para comprobar el backend sin publicar la UI ni crear un Ingress, abre un port-forward al gateway:
+
+```powershell
+kubectl --kubeconfig "RUTA_A_TU_KUBECONFIG" -n grupo-encuestas port-forward service/polls-gateway 5000:5000
+```
+
+En otra terminal, comprueba `http://localhost:5000/health` y envía consultas GraphQL a `http://localhost:5000/graphql/`. El Service es interno; una UI usada desde el navegador necesitará más adelante un Ingress u otro acceso alcanzable desde el navegador. Si la UI usa otro origen, configura `GATEWAY_CORS_ORIGINS` en `k8s/gateway/configmap.yaml` con su origen exacto, aplica de nuevo el ConfigMap y reinicia el Deployment:
+
+```powershell
+kubectl --kubeconfig "RUTA_A_TU_KUBECONFIG" -n grupo-encuestas rollout restart deployment/polls-gateway
+```
+
+El manifiesto apunta a la etiqueta móvil `:main` y usa `imagePullPolicy: Always`. Después de publicar una nueva imagen, ejecuta `rollout restart` para que Kubernetes cree un Pod y descargue la versión actualizada. Para reproducibilidad, puedes sustituir `:main` por la etiqueta inmutable `:sha-<commit>` publicada por el workflow. Si el paquete de GHCR es privado para el clúster, configura un `imagePullSecret` por separado; no guardes credenciales en el ConfigMap ni en Git.
 
 ## Verificación pendiente al desplegar
 

@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: polls-gateway-config
+data:
+  POLLS_SERVICE_URL: "http://polls.grupo-encuestas.svc.cluster.local:8004"
+  USERS_SERVICE_URL: "http://users.servicios-base.svc.cluster.local:8000"
+  CHANNELS_SERVICE_URL: "http://channels.servicios-base.svc.cluster.local:8000"
+  MESSAGES_SERVICE_URL: "http://messages.servicios-base.svc.cluster.local:8000"
+  REACTIONS_SERVICE_URL: "http://reaction-service.grupo-reacciones.svc.cluster.local:8000"
+  SEARCH_SERVICE_URL: "http://search.grupo-busqueda-avanzada.svc.cluster.local:8000"
+  UPSTREAM_TIMEOUT_SECONDS: "5"
+  GATEWAY_CORS_ORIGINS: ""
