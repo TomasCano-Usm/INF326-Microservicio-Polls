@@ -29,6 +29,7 @@ def test_every_pod_template_meets_restricted_security_contract() -> None:
     workloads = [item for item in load_manifests() if item.get("kind") in POD_WORKLOADS]
     assert {item["metadata"]["name"] for item in workloads} == {
         "polls",
+        "polls-gateway",
         "rabbitmq",
         "postgres",
         "polls-migration",
@@ -66,6 +67,7 @@ def test_services_select_workloads_and_target_declared_ports() -> None:
     services = [item for item in manifests if item.get("kind") == "Service"]
     assert {item["metadata"]["name"] for item in services} == {
         "polls",
+        "polls-gateway",
         "postgres",
         "rabbitmq",
     }
