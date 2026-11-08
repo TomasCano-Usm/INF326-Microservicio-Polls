@@ -205,6 +205,37 @@ def test_search_rejects_out_of_range_pagination_without_http_call() -> None:
     assert requests == []
 
 
+def test_search_treats_explicit_null_optional_values_as_defaults() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["limit"] == "25"
+        assert request.url.params["offset"] == "0"
+        assert request.url.params["sort_by"] == "timestamp"
+        assert request.url.params["sort_order"] == "desc"
+        return json_response({"total_results": 0, "messages": []})
+
+    result, requests = execute_graphql(
+        handler,
+        """
+        query Search($input: SearchMessagesInput!) {
+          searchMessages(input: $input) { totalResults messages { id } }
+        }
+        """,
+        {
+            "input": {
+                "limit": None,
+                "offset": None,
+                "sortBy": None,
+                "sortOrder": None,
+            }
+        },
+    )
+
+    assert result == {
+        "data": {"searchMessages": {"totalResults": 0, "messages": []}}
+    }
+    assert len(requests) == 1
+
+
 def test_search_still_rejects_datetime_without_timezone() -> None:
     result, requests = execute_graphql(
         lambda request: (_ for _ in ()).throw(AssertionError(request.url)),

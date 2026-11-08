@@ -404,8 +404,10 @@ async def resolve_polls(_root: Any, info: Any, channelId: str) -> list[dict[str,
 
 @query.field("searchMessages")
 async def resolve_search_messages(_root: Any, info: Any, input: dict[str, Any]) -> Any:
-    limit = input.get("limit", 25)
-    offset = input.get("offset", 0)
+    limit = 25 if input.get("limit") is None else input["limit"]
+    offset = 0 if input.get("offset") is None else input["offset"]
+    sort_by = "timestamp" if input.get("sortBy") is None else input["sortBy"]
+    sort_order = "desc" if input.get("sortOrder") is None else input["sortOrder"]
     if not 1 <= limit <= 25:
         raise GraphQLError("limit must be between 1 and 25.", extensions={"code": "BAD_USER_INPUT"})
     if not 0 <= offset <= 9975:
@@ -424,8 +426,8 @@ async def resolve_search_messages(_root: Any, info: Any, input: dict[str, Any]) 
     for field in ("minDate", "maxDate"):
         if input.get(field) is not None:
             params.append((snake_case({field: input[field]}).popitem()[0], isoformat(input[field])))
-    params.append(("sort_by", str(input.get("sortBy", "timestamp")).lower()))
-    params.append(("sort_order", str(input.get("sortOrder", "desc")).lower()))
+    params.append(("sort_by", str(sort_by).lower()))
+    params.append(("sort_order", str(sort_order).lower()))
     result = await _request(info, "search", "GET", "/api/v1/search/messages", params=params)
     if not isinstance(result, dict) or not isinstance(result.get("messages"), list):
         raise GraphQLError("Search returned an invalid response.")
