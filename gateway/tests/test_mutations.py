@@ -69,7 +69,7 @@ def test_reaction_mutations_include_channel_and_handle_204_delete() -> None:
                     "message_id": "m-1",
                     "user_id": "u-1",
                     "reaction_type": "like",
-                    "created_at": "2026-01-01T12:00:00Z",
+                    "created_at": "2026-01-01T12:00:00",
                 },
                 status=201,
             )
@@ -79,11 +79,15 @@ def test_reaction_mutations_include_channel_and_handle_204_delete() -> None:
 
     created, _ = execute_graphql(
         handler,
-        'mutation { addReaction(messageId: "m-1", channelId: "c-1", userId: "u-1", reactionType: "like") { id reactionType } }',
+        'mutation { addReaction(messageId: "m-1", channelId: "c-1", userId: "u-1", reactionType: "like") { id reactionType createdAt } }',
     )
     deleted, _ = execute_graphql(handler, 'mutation { removeReaction(reactionId: "r-1") }')
 
-    assert created["data"]["addReaction"] == {"id": "r-1", "reactionType": "like"}
+    assert created["data"]["addReaction"] == {
+        "id": "r-1",
+        "reactionType": "like",
+        "createdAt": "2026-01-01T12:00:00Z",
+    }
     assert deleted["data"]["removeReaction"] is True
 
 

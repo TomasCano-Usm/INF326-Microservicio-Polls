@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -207,6 +207,21 @@ def parse_datetime(value: Any) -> datetime:
     return parsed
 
 
+def parse_reaction_datetime(value: Any) -> datetime | None:
+    """Interpret naive Reaction timestamps as UTC, as SQLite CURRENT_TIMESTAMP does."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    else:
+        raise ValueError("Reaction createdAt must be an ISO 8601 string")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 datetime_scalar = ScalarType("DateTime")
 
 
@@ -303,6 +318,7 @@ async def _messages_for_channel(info: Any, channel_id: str) -> list[dict[str, An
 query = QueryType()
 mutation = MutationType()
 message = ObjectType("Message")
+reaction = ObjectType("Reaction")
 
 
 @query.field("health")
@@ -559,11 +575,17 @@ async def resolve_message_reactions(root: dict[str, Any], info: Any) -> Any:
         return None
 
 
+@reaction.field("createdAt")
+def resolve_reaction_created_at(root: dict[str, Any], _info: Any) -> datetime | None:
+    return parse_reaction_datetime(root.get("createdAt"))
+
+
 schema = make_executable_schema(
     TYPE_DEFS,
     query,
     mutation,
     message,
+    reaction,
     datetime_scalar,
     EnumType("SearchHas", {"LINK": "link", "MENTION": "mention"}),
     EnumType("SearchSortBy", {"TIMESTAMP": "timestamp", "RELEVANCE": "relevance"}),

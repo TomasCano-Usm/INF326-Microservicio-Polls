@@ -71,6 +71,57 @@ def test_messages_use_user_loader_and_reactions_failure_is_partial() -> None:
     assert sum(request.url.host == "reactions.test" for request in requests) == 2
 
 
+def test_listed_reaction_timestamps_assume_utc_only_when_timezone_is_missing() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "messages.test":
+            return json_response(
+                [
+                    {
+                        "id": "m-1",
+                        "channel_id": "c-1",
+                        "author_id": "u-1",
+                        "content": "hello",
+                        "created_at": "2026-01-01T12:00:00Z",
+                    }
+                ]
+            )
+        assert request.url.host == "reactions.test"
+        return json_response(
+            {
+                "message_id": "m-1",
+                "total_reactions": 2,
+                "summary": [],
+                "reactions": [
+                    {
+                        "id": "r-naive",
+                        "message_id": "m-1",
+                        "user_id": "u-1",
+                        "reaction_type": "like",
+                        "created_at": "2026-01-01T12:00:00",
+                    },
+                    {
+                        "id": "r-offset",
+                        "message_id": "m-1",
+                        "user_id": "u-2",
+                        "reaction_type": "heart",
+                        "created_at": "2026-01-01T12:00:00+03:00",
+                    },
+                ],
+            }
+        )
+
+    result, _ = execute_graphql(
+        handler,
+        '{ messages(channelId: "c-1") { reactions { reactions { id createdAt } } } }',
+    )
+
+    assert "errors" not in result
+    assert result["data"]["messages"][0]["reactions"]["reactions"] == [
+        {"id": "r-naive", "createdAt": "2026-01-01T12:00:00Z"},
+        {"id": "r-offset", "createdAt": "2026-01-01T12:00:00+03:00"},
+    ]
+
+
 def test_not_found_user_is_nullable() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v1/users/missing"
@@ -151,4 +202,19 @@ def test_search_rejects_out_of_range_pagination_without_http_call() -> None:
     )
 
     assert result["errors"][0]["extensions"]["code"] == "BAD_USER_INPUT"
+    assert requests == []
+
+
+def test_search_still_rejects_datetime_without_timezone() -> None:
+    result, requests = execute_graphql(
+        lambda request: (_ for _ in ()).throw(AssertionError(request.url)),
+        """
+        query Search($input: SearchMessagesInput!) {
+          searchMessages(input: $input) { totalResults }
+        }
+        """,
+        {"input": {"minDate": "2026-01-01T12:00:00"}},
+    )
+
+    assert result.get("errors")
     assert requests == []

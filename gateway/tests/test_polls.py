@@ -105,7 +105,9 @@ def test_create_poll_forwards_idempotency_and_accepts_pending_202() -> None:
         handler,
         """
         mutation Create($input: CreatePollInput!, $key: String) {
-          createPoll(input: $input, idempotencyKey: $key) { pollId status }
+          createPoll(input: $input, idempotencyKey: $key) {
+            pollId status createdAt closesAt
+          }
         }
         """,
         {
@@ -124,6 +126,8 @@ def test_create_poll_forwards_idempotency_and_accepts_pending_202() -> None:
     assert result["data"]["createPoll"] == {
         "pollId": POLL_ID,
         "status": "pending_announcement",
+        "createdAt": "2026-01-01T11:50:00Z",
+        "closesAt": "2026-01-01T12:00:00Z",
     }
 
 
