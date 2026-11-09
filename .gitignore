@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+!frontend/.env.local.example
 .env.k8s
 
 # Kubernetes credentials
@@ -8,6 +9,9 @@
 .kubeconfig
 
 .venv/
+node_modules/
+.next/
+*.tsbuildinfo
 __pycache__/
 *.py[cod]
 .pytest_cache/

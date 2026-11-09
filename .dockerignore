@@ -5,6 +5,11 @@
 .env.*
 !.env.example
 .venv
+node_modules
+.next
+frontend/node_modules
+frontend/.next
+*.tsbuildinfo
 __pycache__
 *.py[cod]
 tests
