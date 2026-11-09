@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+!frontend/.env.development
 .env.k8s
 
 # Kubernetes credentials

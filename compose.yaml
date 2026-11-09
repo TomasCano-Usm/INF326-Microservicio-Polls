@@ -8,11 +8,15 @@ services:
       postgres:
         condition: service_healthy
     restart: "no"
+    networks:
+      - microsvcs
 
   polls-api:
     build: .
     ports:
       - "${POLLS_PORT:-8004}:8004"
+    networks:
+      - microsvcs
     environment:
       DATABASE_URL: "${DATABASE_URL:-postgresql+asyncpg://polls:polls-dev-password@postgres:5432/polls}"
       MESSAGES_ENABLED: "${MESSAGES_ENABLED:-false}"
@@ -49,6 +53,8 @@ services:
     ports:
       - "${RABBITMQ_PORT:-5672}:5672"
       - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    networks:
+      - microsvcs
     restart: unless-stopped
     healthcheck:
       test:
@@ -67,6 +73,8 @@ services:
       POSTGRES_PASSWORD: polls-dev-password
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
+    networks:
+      - microsvcs
     volumes:
       - polls_postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -76,6 +84,43 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+
+  polls-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    ports:
+      - "${GATEWAY_PORT:-5000}:5000"
+    environment:
+      POLLS_SERVICE_URL: http://polls-api:8004
+      USERS_SERVICE_URL: "${USERS_SERVICE_URL:-http://users:8000}"
+      CHANNELS_SERVICE_URL: "${CHANNELS_SERVICE_URL:-http://channels:8000}"
+      MESSAGES_SERVICE_URL: "${MESSAGES_SERVICE_URL:-http://messages:8000}"
+      REACTIONS_SERVICE_URL: "${REACTIONS_SERVICE_URL:-http://reactions:8000}"
+      SEARCH_SERVICE_URL: "${SEARCH_SERVICE_URL:-http://search:8000}"
+      UPSTREAM_TIMEOUT_SECONDS: "${UPSTREAM_TIMEOUT_SECONDS:-5}"
+      GATEWAY_CORS_ORIGINS: "${GATEWAY_CORS_ORIGINS:-}"
+    depends_on:
+      - polls-api
+    restart: unless-stopped
+    networks:
+      - microsvcs
+
+  polls-ui:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "${UI_PORT:-3000}:8080"
+    depends_on:
+      - polls-gateway
+    restart: unless-stopped
+    networks:
+      - microsvcs
+
+networks:
+  microsvcs:
+    name: microsvcs
 
 volumes:
   polls_postgres_data:
