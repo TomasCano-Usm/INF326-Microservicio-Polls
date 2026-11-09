@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 type MessageComposerProps = {
   disabled: boolean;
@@ -7,8 +7,19 @@ type MessageComposerProps = {
   onSend: (content: string) => Promise<void>;
 };
 
+const MAX_TEXTAREA_HEIGHT = 140;
+
 export function MessageComposer({ disabled, sending, channelName, onSend }: MessageComposerProps) {
   const [content, setContent] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
+    textarea.style.overflowY = textarea.scrollHeight > MAX_TEXTAREA_HEIGHT ? "auto" : "hidden";
+  }, [content]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -27,6 +38,7 @@ export function MessageComposer({ disabled, sending, channelName, onSend }: Mess
       <form className="composer" onSubmit={submit}>
         <label className="sr-only" htmlFor="message-composer">Escribe un mensaje</label>
         <textarea
+          ref={textareaRef}
           id="message-composer"
           placeholder={channelName ? `Escribe en #${channelName}` : "Selecciona un canal para escribir"}
           value={content}
