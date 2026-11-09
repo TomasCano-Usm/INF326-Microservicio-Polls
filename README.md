@@ -78,7 +78,91 @@ Los diagramas de arquitectura y flujo del servicio están descritos en [`docs/di
 
 ## Gateway GraphQL para la interfaz
 
-El gateway backend para la futura interfaz está en [`gateway/`](gateway/) y su configuración, consultas, mutaciones, pruebas con mocks y guía de despliegue están en [`docs/gateway.md`](docs/gateway.md). Se ejecuta como componente independiente y no cambia los endpoints REST de Polls.
+El gateway backend de la interfaz está en [`gateway/`](gateway/) y su configuración, consultas, mutaciones, pruebas con mocks y guía de despliegue están en [`docs/gateway.md`](docs/gateway.md). Se ejecuta como componente independiente y no cambia los endpoints REST de Polls.
+
+La interfaz no llama directamente a Users, Channels, Messages, Polls, Reacciones ni Búsqueda: el navegador usa `/api/graphql` de Next.js y ese Route Handler reenvía únicamente las operaciones permitidas al Gateway. El Gateway integra las APIs REST de los seis servicios.
+
+### Activación local
+
+Requisitos: `kubectl` con acceso al clúster, Node.js 20 o posterior y pnpm 12.9.1. El Gateway debe estar desplegado en `grupo-encuestas` (ver [`docs/gateway.md`](docs/gateway.md) y `k8s/gateway/`).
+
+1. Abre un túnel al Service del Gateway. Deja esta terminal abierta:
+
+   ```powershell
+   kubectl --kubeconfig "<RUTA_LOCAL_A_TU_KUBECONFIG>" `
+     -n grupo-encuestas port-forward service/polls-gateway 5000:5000
+   ```
+
+   El túnel es local y temporal: no crea un Ingress ni expone el Gateway a Internet.
+
+2. En otra terminal, verifica que el Gateway responde con HTTP 200:
+
+   ```powershell
+   Invoke-WebRequest http://localhost:5000/health
+   ```
+
+3. Desde la raíz del repositorio, instala y ejecuta el frontend:
+
+   ```powershell
+   Set-Location frontend
+   Copy-Item .env.local.example .env.local
+   pnpm install --frozen-lockfile
+   pnpm run dev
+   ```
+
+   `frontend/.env.local` contiene por defecto `GATEWAY_GRAPHQL_URL=http://localhost:5000/graphql/`. Solo lo lee el servidor de Next.js; no se versiona ni se expone al navegador.
+
+4. Abre `http://localhost:3000`, crea o selecciona un perfil de demostración y un canal.
+
+El endpoint `/health` confirma que el proceso del Gateway responde, no que todos sus upstreams estén disponibles. Si un servicio falla, la interfaz recibe un error GraphQL con `extensions.service` y lo muestra en pantalla.
+
+### Variables de configuración
+
+El Gateway toma las URLs de los servicios desde el entorno. En Kubernetes se inyectan con `k8s/gateway/configmap.yaml`; para ejecutarlo fuera del clúster:
+
+| Variable | Valor local por defecto |
+| --- | --- |
+| `POLLS_SERVICE_URL` | `http://localhost:8004` |
+| `USERS_SERVICE_URL` | `http://localhost:8001` |
+| `CHANNELS_SERVICE_URL` | `http://localhost:8002` |
+| `MESSAGES_SERVICE_URL` | `http://localhost:8003` |
+| `REACTIONS_SERVICE_URL` | `http://localhost:8000` |
+| `SEARCH_SERVICE_URL` | `http://localhost:8000` |
+| `UPSTREAM_TIMEOUT_SECONDS` | `5` |
+| `GATEWAY_CORS_ORIGINS` | vacío (same-origin) |
+
+Los defaults solo sirven si esos servicios escuchan en los puertos indicados. Para levantar el Gateway sin Kubernetes, desde la raíz:
+
+```powershell
+python -m venv .venv-gateway
+.venv-gateway\Scripts\Activate.ps1
+pip install -r gateway/requirements.txt
+uvicorn gateway.app.main:app --port 5000
+```
+
+El Gateway expone `GET /health`, GraphQL en `/graphql/` y GraphiQL en el navegador. La tabla con los ejemplos de URLs internas del clúster y los contratos consumidos está en [`docs/gateway.md`](docs/gateway.md).
+
+### Frontend con Docker Compose
+
+Con el túnel activo, el frontend también puede ejecutarse en la red `microsvcs`:
+
+```powershell
+$env:GATEWAY_GRAPHQL_URL = "http://host.docker.internal:5000/graphql/"
+docker compose up --build frontend
+```
+
+En este modo el navegador sigue llamando a `/api/graphql` en Next.js; `host.docker.internal` solo resuelve el port-forward del host desde el contenedor. La guía detallada está en [`docs/frontend.md`](docs/frontend.md).
+
+### Despliegue del Gateway en Kubernetes
+
+La imagen se publica en GHCR con el workflow `publish-gateway-image.yml`. Aplica solo los manifiestos del Gateway:
+
+```powershell
+kubectl --kubeconfig "<RUTA_LOCAL_A_TU_KUBECONFIG>" -n grupo-encuestas apply -f k8s/gateway/
+kubectl --kubeconfig "<RUTA_LOCAL_A_TU_KUBECONFIG>" -n grupo-encuestas rollout status deployment/polls-gateway
+```
+
+No guardes kubeconfig ni credenciales en el repositorio.
 
 ## Interfaz web Chat + Polls
 
