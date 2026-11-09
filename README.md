@@ -80,6 +80,10 @@ Los diagramas de arquitectura y flujo del servicio están descritos en [`docs/di
 
 El gateway backend para la futura interfaz está en [`gateway/`](gateway/) y su configuración, consultas, mutaciones, pruebas con mocks y guía de despliegue están en [`docs/gateway.md`](docs/gateway.md). Se ejecuta como componente independiente y no cambia los endpoints REST de Polls.
 
+## Interfaz web Chat + Polls
+
+La aplicación Next.js, React y TypeScript está en [`frontend/`](frontend/). Consume exclusivamente GraphQL a través del proxy server-side `/api/graphql`; la guía de ejecución local con port-forward, Compose (`microsvcs`), pruebas, flujos de uso y video de demostración está en [`docs/frontend.md`](docs/frontend.md). El perfil de usuario de la interfaz es solo un ID de dominio y no proporciona autenticación.
+
 ## Kubernetes (Unidad 05)
 
 Los manifests, límites de recursos, migración mediante Job, integración con Messages del core y comandos futuros de despliegue están documentados en [`docs/kubernetes.md`](docs/kubernetes.md). Polls se configura con `MESSAGES_ENABLED=true` y usa `http://messages.servicios-base.svc.cluster.local:8000`; no se despliegan Users, Channels ni Messages. Kubernetes utiliza PostgreSQL persistente (un PVC de 1 GiB), RabbitMQ efímero, readiness/liveness y HPA de 1 a 3 Pods. No hay CD al clúster.
