@@ -41,6 +41,19 @@ services:
       retries: 3
       start_period: 5s
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      GATEWAY_GRAPHQL_URL: "${GATEWAY_GRAPHQL_URL:-http://host.docker.internal:5000/graphql/}"
+      WATCHPACK_POLLING: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
   rabbitmq:
     image: rabbitmq:4-management-alpine
     environment:
@@ -79,3 +92,7 @@ services:
 
 volumes:
   polls_postgres_data:
+
+networks:
+  default:
+    name: microsvcs
