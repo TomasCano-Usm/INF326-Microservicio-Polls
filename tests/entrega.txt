@@ -1,0 +1,59 @@
+Tarea Unidad 7 - Control de calidad
+Capacidad: Polls
+
+Repositorio:
+https://github.com/TomasCano-Usm/INF326-Microservicio-Polls
+
+Qué se hizo:
+- Se ejecutó y documentó la cobertura de servicio existente para los endpoints
+  de Polls, incluyendo escenarios correctos y de error. Usa SQLite temporal
+  aislada y dobles para RabbitMQ y Messages.
+- Se documentó y probó el contrato HTTP que Polls consume de Messages. El
+  fragmento OpenAPI de referencia proviene del chat base y valida la ruta, el
+  cuerpo de la solicitud y la respuesta esperada.
+- Se incluyó una copia atribuida del chat base para QA en
+  tests/fixtures/chat_base/ (Users, Channels y Messages), con origen, revisión y
+  licencia documentados. Así la integración no depende de otro checkout local.
+- Se preparó una integración Docker Compose local con esos servicios junto con
+  Polls, PostgreSQL, RabbitMQ y MongoDB.
+- Pytest levanta y limpia automáticamente el stack de integración. Comprueba el
+  OpenAPI del Messages real y recorre el flujo de crear usuario y canal, crear
+  encuesta, verificar el anuncio, votar, cerrar y verificar resultados.
+
+Dónde revisar:
+- docs/qa.md: requisitos, comandos para instalar y ejecutar las pruebas,
+  explicación de cobertura, contrato, aislamiento e integración, y limpieza del
+  entorno local.
+- tests/test_polls_api.py: pruebas de servicio y aislamiento.
+- tests/test_messages_client.py: prueba de contrato con Messages.
+- tests/contracts/messages-v1.openapi.json: fragmento OpenAPI usado como pacto.
+- tests/test_compose_integration.py: flujo de integración HTTP.
+- tests/fixtures/chat_base/README.md y LICENSE: procedencia y licencia del chat
+  base incluido para QA.
+- compose.qa.yaml: definición del entorno QA local.
+
+Ejecución rápida en Windows:
+1. Instala Python 3.14 e inicia Docker Desktop.
+2. Abre CMD en la raíz del repositorio y ejecuta:
+   run_qa.cmd
+3. El script crea o verifica .venv, instala las dependencias y configura una
+   carpeta temporal aislada bajo %LOCALAPPDATA%\PollsQA para evitar los errores
+   de permisos de la carpeta temporal predeterminada de Windows.
+4. Ejecuta servicio, contrato e integración; pytest levanta y elimina
+   automáticamente el stack QA. No es necesario activar .venv ni ejecutar
+   Compose manualmente. docs/qa.md contiene detalles y comandos opcionales.
+
+Resultados de validación registrados:
+- Ejecución completa en Windows con Python 3.14.5 usando carpeta temporal
+  alternativa: 35 aprobadas y 4 omitidas; incluye servicio, contrato e integración.
+- Suite estándar (`python -m pytest -q`): 33 aprobadas, 4 omitidas y 2 pruebas de
+  integración excluidas por defecto.
+- Integración (`python -m pytest -m integration -v`): 2 aprobadas; contrato
+  OpenAPI del Messages real y flujo completo de encuestas.
+
+Declaración de uso de IA:
+Durante el desarrollo de este proyecto se utilizaron principalmente modelos de
+OpenAI, específicamente GPT-6.1 Sol y GPT-6 Luna, como apoyo transversal en la
+implementación, resolución de problemas y elaboración de documentación. La
+responsabilidad sobre el contenido entregado y las decisiones técnicas
+adoptadas corresponde a los autores del proyecto.

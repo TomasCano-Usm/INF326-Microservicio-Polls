@@ -1,0 +1,72 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Chat Messages",
+    "version": "1.0.0"
+  },
+  "x-source-revision": "8930ac9255ff5a5e7574d9546404e76f1ebb62dd",
+  "x-source-path": "03_Comunicación/demo/messages/app/main.py",
+  "paths": {
+    "/api/v1/channels/{channel_id}/messages": {
+      "post": {
+        "summary": "Create Message",
+        "operationId": "create_message_api_v1_channels__channel_id__messages_post",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Channel Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "MessageCreate": {
+        "properties": {
+          "author_id": {
+            "type": "string",
+            "title": "Author Id"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "author_id",
+          "content"
+        ],
+        "title": "MessageCreate"
+      }
+    }
+  }
+}

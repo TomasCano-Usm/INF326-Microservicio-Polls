@@ -1,0 +1,180 @@
+services:
+  polls-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: polls
+      POSTGRES_USER: polls
+      POSTGRES_PASSWORD: polls-qa-password
+    volumes:
+      - polls_qa_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U polls -d polls"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  polls-rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: polls
+      RABBITMQ_DEFAULT_PASS: polls-qa-password
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  users-mongodb:
+    image: mongo:7
+    volumes:
+      - polls_qa_users_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  channels-mongodb:
+    image: mongo:7
+    volumes:
+      - polls_qa_channels_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  messages-mongodb:
+    image: mongo:7
+    volumes:
+      - polls_qa_messages_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  users:
+    build:
+      context: ./tests/fixtures/chat_base/users
+    ports:
+      - "${POLLS_QA_USERS_PORT:-18001}:8000"
+    environment:
+      MONGODB_URL: mongodb://users-mongodb:27017
+    depends_on:
+      users-mongodb:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  channels:
+    build:
+      context: ./tests/fixtures/chat_base/channels
+    ports:
+      - "${POLLS_QA_CHANNELS_PORT:-18002}:8000"
+    environment:
+      MONGODB_URL: mongodb://channels-mongodb:27017
+    depends_on:
+      channels-mongodb:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  messages:
+    build:
+      context: ./tests/fixtures/chat_base/messages
+    ports:
+      - "${POLLS_QA_MESSAGES_PORT:-18003}:8000"
+    environment:
+      MONGODB_URL: mongodb://messages-mongodb:27017
+      USERS_URL: http://users:8000
+      CHANNELS_URL: http://channels:8000
+    depends_on:
+      messages-mongodb:
+        condition: service_healthy
+      users:
+        condition: service_healthy
+      channels:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  polls-migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://polls:polls-qa-password@polls-postgres:5432/polls
+    depends_on:
+      polls-postgres:
+        condition: service_healthy
+    restart: "no"
+
+  polls-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${POLLS_QA_POLLS_PORT:-18004}:8004"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://polls:polls-qa-password@polls-postgres:5432/polls
+      MESSAGES_ENABLED: "true"
+      MESSAGES_BASE_URL: http://messages:8000
+      MESSAGES_TIMEOUT_SECONDS: "5"
+      RABBITMQ_URL: amqp://polls:polls-qa-password@polls-rabbitmq:5672/
+      RABBITMQ_EXCHANGE: polls.events
+      POLL_CLOSE_SCAN_INTERVAL_SECONDS: "1"
+      POLL_RETRY_BASE_SECONDS: "1"
+    depends_on:
+      polls-migrate:
+        condition: service_completed_successfully
+      polls-rabbitmq:
+        condition: service_healthy
+      messages:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "from urllib.request import urlopen; urlopen('http://127.0.0.1:8004/health', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  polls_qa_postgres_data:
+  polls_qa_users_data:
+  polls_qa_channels_data:
+  polls_qa_messages_data:

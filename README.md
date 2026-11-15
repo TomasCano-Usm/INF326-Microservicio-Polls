@@ -249,6 +249,8 @@ pytest
 
 Las pruebas usan SQLite temporal, un publicador falso y un cliente Messages falso; no requieren PostgreSQL, RabbitMQ ni el servicio Messages. FastAPI también publica la documentación OpenAPI en `/docs` y `/redoc`.
 
+La cobertura de servicio, el contrato HTTP con Messages y la integración reproducible de `users`, `channels` y `messages` en Docker Compose están descritos en [`docs/qa.md`](docs/qa.md). La integración incluye una copia atribuida del chat base bajo `tests/fixtures/chat_base/`, por lo que solo se necesita clonar este repositorio.
+
 La suite opcional [`tests/test_postgres_concurrency.py`](tests/test_postgres_concurrency.py) usa PostgreSQL real para verificar locks de fila con votos concurrentes y la competencia entre cierre manual y automático. Sin `POLLS_TEST_DATABASE_URL`, esos tests se omiten. Levanta PostgreSQL (por ejemplo, `docker compose up -d postgres`), configura esa variable con la URL de una base de pruebas donde el usuario pueda crear schemas y ejecuta:
 
 ```bash
